@@ -31,7 +31,8 @@ bool n_hooks::impl_t::on_attach( )
 
 	initialise_hook( m_run_command, g_virtual.get( g_interfaces.m_prediction, 19 ), &n_detoured_functions::run_command, "IPrediction::RunCommand()" );
 
-	// Keep EmitSound unhooked: the pass-through detour was still enough to disturb fall/landing sounds on some builds.
+	initialise_hook( m_emit_sound, g_virtual.get( g_interfaces.m_engine_sound, 5 ), &n_detoured_functions::emit_sound,
+	                 "IEngineSound::EmitSound()" );
 
 	initialise_hook( m_frame_stage_notify, g_virtual.get( g_interfaces.m_base_client, 37 ), &n_detoured_functions::frame_stage_notify,
 	                 "CHLClient::FrameStageNotify()" );

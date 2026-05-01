@@ -5,7 +5,9 @@
 
 #include "../../dependencies/json/json.hpp"
 #include "../../game/sdk/classes/c_color.h"
+#include "../interfaces/interfaces.h"
 #include "../../utilities/console/console.h"
+#include "../../hacks/movement/movement_assist_simulation.h"
 #include "../macros/macros.h"
 #include "variables.h"
 
@@ -13,19 +15,25 @@
 
 bool n_config::impl_t::on_attach( )
 {
+	drainware_stability_breadcrumb( "config_on_attach" );
 	if ( !std::filesystem::is_directory( this->m_path ) ) {
 		std::filesystem::remove( this->m_path );
-		if ( !std::filesystem::create_directories( this->m_path ) )
+		if ( !std::filesystem::create_directories( this->m_path ) ) {
+			drainware_stability_error( "config", "failed to create config directory" );
+			g_drainware_config_health = "directory failed";
 			return false;
+		}
 	}
 
 	this->refresh( );
+	g_drainware_config_health = "ready";
 
 	return true;
 }
 
 bool n_config::impl_t::save( std::string_view file_name )
 {
+	drainware_stability_breadcrumb( "config_save" );
 	std::filesystem::path file_path( file_name );
 	if ( file_path.extension( ) != n_branding::k_config_extension )
 		file_path.replace_extension( n_branding::k_config_extension );
@@ -144,147 +152,189 @@ bool n_config::impl_t::save( std::string_view file_name )
 		}
 	} catch ( const nlohmann::detail::exception& ex ) {
 		g_console.print( std::format( "failed to save {}", ex.what( ) ).c_str( ) );
+		drainware_stability_error( "config", std::string( "save serialize failed: " ) + ex.what( ) );
+		g_drainware_config_health = "save failed";
 
 		return false;
 	}
 
 	std::ofstream output_file( file, std::ios::out | std::ios::trunc );
-	if ( !output_file.good( ) )
+	if ( !output_file.good( ) ) {
+		drainware_stability_error( "config", std::string( "save open failed: " ) + file );
+		g_drainware_config_health = "save open failed";
 		return false;
+	}
 
 	try {
 		output_file << config.dump( 4 );
 		output_file.close( );
 	} catch ( std::ofstream::failure& ex ) {
 			g_console.print( std::format( "failed to save {}", ex.what( ) ).c_str( ) );
+		drainware_stability_error( "config", std::string( "save write failed: " ) + ex.what( ) );
+		g_drainware_config_health = "save write failed";
 		return false;
 	}
 
+	g_drainware_config_health = std::string( "saved " ) + file_path.filename( ).string( );
 	return true;
 }
 
 bool n_config::impl_t::load( std::string_view file_name )
 {
+	drainware_stability_breadcrumb( "config_load" );
 	const std::string file = std::filesystem::path( this->m_path / file_name ).string( );
 	nlohmann::json config  = { };
 
 	std::ifstream input_file( file, std::ios::in );
 
-	if ( !input_file.good( ) )
+	if ( !input_file.good( ) ) {
+		drainware_stability_error( "config", std::string( "load open failed: " ) + file );
+		g_drainware_config_health = "load open failed";
 		return false;
+	}
 
 	try {
 		config = nlohmann::json::parse( input_file, nullptr, false );
 
-		if ( config.is_discarded( ) )
+		if ( config.is_discarded( ) ) {
+			drainware_stability_error( "config", std::string( "load parse failed: " ) + file );
+			g_drainware_config_health = "parse failed";
 			return false;
+		}
 
 		input_file.close( );
 	} catch ( std::ifstream::failure& ex ) {
 		g_console.print( std::format( "failed to save {}", ex.what( ) ).c_str( ) );
-		;
+		drainware_stability_error( "config", std::string( "load read failed: " ) + ex.what( ) );
+		g_drainware_config_health = "load read failed";
 		return false;
 	}
 
 	try {
 		for ( const auto& variable : config ) {
-			const unsigned int index = this->get_variable_index( variable[ ( "name-id" ) ].get< unsigned int >( ) );
-
-			if ( index == INVALID_VARIABLE )
+			if ( !variable.is_object( ) || !variable.contains( "name-id" ) || !variable.contains( "type-id" ) ||
+			     !variable.contains( "value" ) )
 				continue;
 
-			auto& entry = this->m_variables[ index ];
+			try {
+				const unsigned int index = this->get_variable_index( variable[ ( "name-id" ) ].get< unsigned int >( ) );
 
-			switch ( variable[ ( "type-id" ) ].get< unsigned int >( ) ) {
-			case HASH_BT( "bool" ): {
-				entry.set< bool >( variable[ ( "value" ) ].get< bool >( ) );
-				break;
-			}
-			case HASH_BT( "float" ): {
-				entry.set< float >( variable[ ( "value" ) ].get< float >( ) );
-				break;
-			}
-			case HASH_BT( "int" ): {
-				entry.set< int >( variable[ ( "value" ) ].get< int >( ) );
-				break;
-			}
-			case HASH_BT( "std::string" ): {
-				entry.set< std::string >( variable[ ( "value" ) ].get< std::string >( ) );
-				break;
-			}
-			case HASH_BT( "c_color" ): {
-				const nlohmann::json vector = nlohmann::json::parse( variable[ ( "value" ) ].get< std::string >( ) );
+				if ( index == INVALID_VARIABLE )
+					continue;
 
-				entry.set< c_color >( c_color( vector[ 0 ].get< std::uint8_t >( ), vector[ 1 ].get< std::uint8_t >( ),
-				                               vector[ 2 ].get< std::uint8_t >( ), vector[ 3 ].get< std::uint8_t >( ) ) );
+				auto& entry = this->m_variables[ index ];
 
-				break;
-			}
-			case HASH_BT( "key_bind_t" ): {
-				const nlohmann::json vector = nlohmann::json::parse( variable[ ( "value" ) ].get< std::string >( ) );
-
-				entry.set< key_bind_t >( key_bind_t( vector[ 0 ].get< int >( ), vector[ 1 ].get< int >( ) ) );
-				break;
-			}
-			case HASH_BT( "font_setting_t" ): {
-				const nlohmann::json vector = nlohmann::json::parse( variable[ ( "value" ) ].get< std::string >( ) );
-
-				entry.set< font_setting_t >( font_setting_t( vector[ 0 ].get< std::string >( ), vector[ 1 ].get< int >( ) ) );
-				break;
-			}
-			case HASH_BT( "std::vector<bool>" ): {
-				const nlohmann::json vector = nlohmann::json::parse( variable[ ( "value" ) ].get< std::string >( ) );
-				auto& booleans              = entry.get< std::vector< bool > >( );
-
-				for ( std::size_t i = 0U; i < vector.size( ); i++ ) {
-					if ( i < booleans.size( ) )
-						booleans[ i ] = vector[ i ].get< bool >( );
+				switch ( variable[ ( "type-id" ) ].get< unsigned int >( ) ) {
+				case HASH_BT( "bool" ): {
+					entry.set< bool >( variable[ ( "value" ) ].get< bool >( ) );
+					break;
 				}
-
-				break;
-			}
-			case HASH_BT( "std::vector<int>" ): {
-				const nlohmann::json vector = nlohmann::json::parse( variable[ ( "value" ) ].get< std::string >( ) );
-				auto& integers              = entry.get< std::vector< int > >( );
-
-				for ( std::size_t i = 0U; i < vector.size( ); i++ ) {
-					if ( i < integers.size( ) )
-						integers[ i ] = vector[ i ].get< int >( );
+				case HASH_BT( "float" ): {
+					entry.set< float >( std::clamp( variable[ ( "value" ) ].get< float >( ), -100000.f, 100000.f ) );
+					break;
 				}
-
-				break;
-			}
-			case HASH_BT( "std::vector<float>" ): {
-				const nlohmann::json vector = nlohmann::json::parse( variable[ ( "value" ) ].get< std::string >( ) );
-				auto& floats                = entry.get< std::vector< float > >( );
-
-				for ( std::size_t i = 0U; i < vector.size( ); i++ ) {
-					if ( i < floats.size( ) )
-						floats[ i ] = vector[ i ].get< float >( );
+				case HASH_BT( "int" ): {
+					entry.set< int >( variable[ ( "value" ) ].get< int >( ) );
+					break;
 				}
-
-				break;
-			}
-			case HASH_BT( "std::vector<std::string>" ): {
-				const nlohmann::json vector = nlohmann::json::parse( variable[ ( "value" ) ].get< std::string >( ) );
-				auto& strings               = entry.get< std::vector< std::string > >( );
-
-				for ( std::size_t i = 0U; i < vector.size( ); i++ ) {
-					if ( i < strings.size( ) )
-						strings[ i ] = vector[ i ].get< std::string >( );
+				case HASH_BT( "std::string" ): {
+					entry.set< std::string >( variable[ ( "value" ) ].get< std::string >( ) );
+					break;
 				}
+				case HASH_BT( "c_color" ): {
+					const nlohmann::json vector = nlohmann::json::parse( variable[ ( "value" ) ].get< std::string >( ), nullptr, false );
+					if ( !vector.is_array( ) || vector.size( ) < 4 )
+						break;
 
-				break;
-			}
-			default:
-				break;
+					entry.set< c_color >( c_color( vector[ 0 ].get< std::uint8_t >( ), vector[ 1 ].get< std::uint8_t >( ),
+					                               vector[ 2 ].get< std::uint8_t >( ), vector[ 3 ].get< std::uint8_t >( ) ) );
+
+					break;
+				}
+				case HASH_BT( "key_bind_t" ): {
+					const nlohmann::json vector = nlohmann::json::parse( variable[ ( "value" ) ].get< std::string >( ), nullptr, false );
+					if ( !vector.is_array( ) || vector.size( ) < 2 )
+						break;
+
+					entry.set< key_bind_t >( key_bind_t( vector[ 0 ].get< int >( ), vector[ 1 ].get< int >( ) ) );
+					break;
+				}
+				case HASH_BT( "font_setting_t" ): {
+					const nlohmann::json vector = nlohmann::json::parse( variable[ ( "value" ) ].get< std::string >( ), nullptr, false );
+					if ( !vector.is_array( ) || vector.size( ) < 2 )
+						break;
+
+					entry.set< font_setting_t >( font_setting_t( vector[ 0 ].get< std::string >( ), vector[ 1 ].get< int >( ) ) );
+					break;
+				}
+				case HASH_BT( "std::vector<bool>" ): {
+					const nlohmann::json vector = nlohmann::json::parse( variable[ ( "value" ) ].get< std::string >( ), nullptr, false );
+					if ( !vector.is_array( ) )
+						break;
+					auto& booleans = entry.get< std::vector< bool > >( );
+
+					for ( std::size_t i = 0U; i < vector.size( ); i++ ) {
+						if ( i < booleans.size( ) )
+							booleans[ i ] = vector[ i ].get< bool >( );
+					}
+
+					break;
+				}
+				case HASH_BT( "std::vector<int>" ): {
+					const nlohmann::json vector = nlohmann::json::parse( variable[ ( "value" ) ].get< std::string >( ), nullptr, false );
+					if ( !vector.is_array( ) )
+						break;
+					auto& integers = entry.get< std::vector< int > >( );
+
+					for ( std::size_t i = 0U; i < vector.size( ); i++ ) {
+						if ( i < integers.size( ) )
+							integers[ i ] = vector[ i ].get< int >( );
+					}
+
+					break;
+				}
+				case HASH_BT( "std::vector<float>" ): {
+					const nlohmann::json vector = nlohmann::json::parse( variable[ ( "value" ) ].get< std::string >( ), nullptr, false );
+					if ( !vector.is_array( ) )
+						break;
+					auto& floats = entry.get< std::vector< float > >( );
+
+					for ( std::size_t i = 0U; i < vector.size( ); i++ ) {
+						if ( i < floats.size( ) )
+							floats[ i ] = std::clamp( vector[ i ].get< float >( ), -100000.f, 100000.f );
+					}
+
+					break;
+				}
+				case HASH_BT( "std::vector<std::string>" ): {
+					const nlohmann::json vector = nlohmann::json::parse( variable[ ( "value" ) ].get< std::string >( ), nullptr, false );
+					if ( !vector.is_array( ) )
+						break;
+					auto& strings = entry.get< std::vector< std::string > >( );
+
+					for ( std::size_t i = 0U; i < vector.size( ); i++ ) {
+						if ( i < strings.size( ) )
+							strings[ i ] = vector[ i ].get< std::string >( );
+					}
+
+					break;
+				}
+				default:
+					break;
+				}
+			} catch ( const nlohmann::detail::exception& ex ) {
+				drainware_stability_error( "config", std::string( "ignored bad field: " ) + ex.what( ) );
+				continue;
 			}
 		}
 	} catch ( const nlohmann::detail::exception& ex ) {
 		g_console.print( std::format( "josn {}", ex.what( ) ).c_str( ) );
+		drainware_stability_error( "config", std::string( "load failed: " ) + ex.what( ) );
+		g_drainware_config_health = "load failed";
 		return false;
 	}
 
+	g_drainware_config_health = std::string( "loaded " ) + std::filesystem::path( file_name ).filename( ).string( );
 	return true;
 }
 

@@ -214,6 +214,9 @@ public:
 	NETVAR_VARIABLE( int, get_tick_base, "CBasePlayer->m_nTickBase" );
 	NETVAR_PVARIABLE( int, get_next_think_tick, "CBasePlayer->m_nNextThinkTick" );
 	NETVAR_VARIABLE( c_vector, get_velocity, "CBasePlayer->m_vecVelocity[0]" );
+	NETVAR_VARIABLE( c_vector, get_base_velocity, "CBasePlayer->m_vecBaseVelocity" );
+	NETVAR_VARIABLE( float, get_duck_amount, "CBasePlayer->m_flDuckAmount" );
+	NETVAR_VARIABLE( float, get_duck_speed, "CBasePlayer->m_flDuckSpeed" );
 	NETVAR_PVARIABLE_OFFSET( c_angle, get_view_angles, "CBasePlayer->deadflag", 0x4 );
 	NETVAR_VARIABLE( unsigned int, get_ground_entity_handle, "CBasePlayer->m_hGroundEntity" );
 	NETVAR_VARIABLE( int, get_health, "CBasePlayer->m_iHealth" );

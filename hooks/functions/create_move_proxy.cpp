@@ -7,6 +7,7 @@
 #include "../../hacks/misc/misc.h"
 #include "../../hacks/misc/scaleform/scaleform.h"
 #include "../../hacks/movement/movement.h"
+#include "../../hacks/movement/movement_assist_simulation.h"
 #include "../../hacks/prediction/prediction.h"
 #include "../../hacks/movement/edgebug.h"
 
@@ -52,8 +53,16 @@ void __stdcall create_move( int sequence_number, float input_sample_frametime, b
 
 		g_prediction.end( g_ctx.m_local );
 
-		g_movement.on_create_move_post( );
-		g_edgebug.EdgeBugPostPredict( cmd );
+		{
+			ScopedMovementAssistSimulation simulation_guard( "movement_post_assists" );
+			ScopedMovementAssistState state_guard( g_ctx.m_local, cmd, false );
+			g_movement.on_create_move_post( );
+		}
+		{
+			ScopedMovementAssistSimulation simulation_guard( "edgebug" );
+			ScopedMovementAssistState state_guard( g_ctx.m_local, cmd, false );
+			g_edgebug.EdgeBugPostPredict( cmd );
+		}
 	}( );
 
 

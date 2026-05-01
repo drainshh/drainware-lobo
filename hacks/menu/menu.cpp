@@ -7,6 +7,7 @@
 #include "../misc/misc.h"
 #include "../misc/scaleform/scaleform.h"
 #include "../movement/movement.h"
+#include "../movement/movement_assist_simulation.h"
 #include "../inventory/inventory_changer.h"
 #include "../../dependencies/imgui/imgui.h"
 #include "../inventory/items_manager.h"
@@ -19,7 +20,12 @@
 #include "../elements/combobox.hh"
 #include "../elements/i_text.hh"
 #include "../aimbot/aimbot.h"
+#include <algorithm>
+#include <array>
+#include <cctype>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 constexpr int color_picker_alpha_flags = ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_AlphaBar | ImGuiColorEditFlags_AlphaPreviewHalf |
                                          ImGuiColorEditFlags_NoOptions | ImGuiColorEditFlags_InputRGB | ImGuiColorEditFlags_NoInputs |
                                          ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop | ImGuiColorEditFlags_PickerHueBar |
@@ -421,9 +427,477 @@ std::string LocalizeTex2( const char* in )
 
 extern bool SaveInventory( const std::unordered_map< uint64_t, InventoryItem_t >& inventory, const char* filename );
 extern bool LoadInventory( std::unordered_map< uint64_t, InventoryItem_t >& inventory, const char* filename );
+
+namespace
+{
+	constexpr std::array< const char*, 22 > k_session_particle_labels{
+		"off", "surface-based", "blood impact", "blood mist", "feathers", "confetti A", "confetti balloons", "dust devil",
+		"water splash", "baggage drip", "molotov fireball", "weapon confetti", "engine dust", "engine sparks", "engine smoke",
+		"engine ring beam", "engine lightning beam", "ambient sparks core", "weapon confetti sparks", "dust devil smoke",
+		"dust devil swirls", "baggage splash",
+	};
+
+	struct preset_snapshot_t {
+		bool valid = false;
+		int watermark_mode = 1;
+		bool debug_logging = false;
+		bool debug_particles = true;
+		bool debug_sound = true;
+		bool speedometer = false;
+		bool run_analyzer = false;
+		bool movement_chat = false;
+		bool bind_overlay = false;
+		bool px_database = false;
+		bool px_auto_record = true;
+		bool footstep_fx = false;
+		bool eb_particles = false;
+		bool bullet_tracer = false;
+		bool bloom = false;
+		bool dof = false;
+		bool ambient = false;
+		bool world_modulation = false;
+		bool velocity_trail = false;
+		bool afterimage = false;
+		bool jump_trail = false;
+		int speedometer_style = 0;
+	};
+
+	preset_snapshot_t g_last_preset_snapshot{ };
+
+	std::string lower_copy( std::string value )
+	{
+		std::transform( value.begin( ), value.end( ), value.begin( ), []( unsigned char ch ) { return static_cast< char >( std::tolower( ch ) ); } );
+		return value;
+	}
+
+	std::vector< std::string > split_favorites( const std::string& raw )
+	{
+		std::vector< std::string > out;
+		std::stringstream stream( raw );
+		std::string item;
+		while ( std::getline( stream, item, ';' ) ) {
+			if ( !item.empty( ) && std::find( out.begin( ), out.end( ), item ) == out.end( ) )
+				out.push_back( item );
+		}
+		return out;
+	}
+
+	std::string join_favorites( const std::vector< std::string >& favorites )
+	{
+		std::string out;
+		for ( const auto& favorite : favorites ) {
+			if ( !out.empty( ) )
+				out += ';';
+			out += favorite;
+		}
+		return out;
+	}
+
+	void add_particle_favorite( const int particle_index )
+	{
+		if ( particle_index <= 0 || particle_index >= static_cast< int >( k_session_particle_labels.size( ) ) )
+			return;
+
+		auto& raw = GET_VARIABLE( g_variables.m_particle_favorites, std::string );
+		auto favorites = split_favorites( raw );
+		const std::string label = k_session_particle_labels[ particle_index ];
+		if ( std::find( favorites.begin( ), favorites.end( ), label ) == favorites.end( ) )
+			favorites.push_back( label );
+		raw = join_favorites( favorites );
+		drainware_stability_breadcrumb( "particle_favorite_add" );
+	}
+
+	int particle_index_by_label( const std::string& label )
+	{
+		for ( int i = 0; i < static_cast< int >( k_session_particle_labels.size( ) ); ++i ) {
+			if ( label == k_session_particle_labels[ i ] )
+				return i;
+		}
+		return 0;
+	}
+
+	preset_snapshot_t capture_preset_snapshot( )
+	{
+		preset_snapshot_t snapshot{ };
+		snapshot.valid = true;
+		snapshot.watermark_mode = GET_VARIABLE( g_variables.m_watermark_mode, int );
+		snapshot.debug_logging = GET_VARIABLE( g_variables.m_debug_logging, bool );
+		snapshot.debug_particles = GET_VARIABLE( g_variables.m_debug_log_particles, bool );
+		snapshot.debug_sound = GET_VARIABLE( g_variables.m_debug_log_sound, bool );
+		snapshot.speedometer = GET_VARIABLE( g_variables.m_speedometer, bool );
+		snapshot.run_analyzer = GET_VARIABLE( g_variables.m_run_analyzer, bool );
+		snapshot.movement_chat = GET_VARIABLE( g_variables.m_movement_chat_prints, bool );
+		snapshot.bind_overlay = GET_VARIABLE( g_variables.m_bind_overlay, bool );
+		snapshot.px_database = GET_VARIABLE( g_variables.m_px_database, bool );
+		snapshot.px_auto_record = GET_VARIABLE( g_variables.m_px_database_auto_record, bool );
+		snapshot.footstep_fx = GET_VARIABLE( g_variables.m_footstep_fx_enabled, bool );
+		snapshot.eb_particles = GET_VARIABLE( g_variables.m_edgebug_particles, bool );
+		snapshot.bullet_tracer = GET_VARIABLE( g_variables.m_bullet_tracer, bool );
+		snapshot.bloom = GET_VARIABLE( g_variables.m_bloom, bool );
+		snapshot.dof = GET_VARIABLE( g_variables.m_dof, bool );
+		snapshot.ambient = GET_VARIABLE( g_variables.m_engine_ambient_light, bool );
+		snapshot.world_modulation = GET_VARIABLE( g_variables.m_world_modulation, bool );
+		snapshot.velocity_trail = GET_VARIABLE( g_variables.m_velocity_trail, bool );
+		snapshot.afterimage = GET_VARIABLE( g_variables.m_local_afterimage, bool );
+		snapshot.jump_trail = GET_VARIABLE( g_variables.m_jump_trail, bool );
+		snapshot.speedometer_style = GET_VARIABLE( g_variables.m_speedometer_style, int );
+		return snapshot;
+	}
+
+	void restore_preset_snapshot( const preset_snapshot_t& snapshot )
+	{
+		if ( !snapshot.valid )
+			return;
+
+		drainware_stability_breadcrumb( "session_preset_undo" );
+		GET_VARIABLE( g_variables.m_watermark_mode, int ) = snapshot.watermark_mode;
+		GET_VARIABLE( g_variables.m_debug_logging, bool ) = snapshot.debug_logging;
+		GET_VARIABLE( g_variables.m_debug_log_particles, bool ) = snapshot.debug_particles;
+		GET_VARIABLE( g_variables.m_debug_log_sound, bool ) = snapshot.debug_sound;
+		GET_VARIABLE( g_variables.m_speedometer, bool ) = snapshot.speedometer;
+		GET_VARIABLE( g_variables.m_run_analyzer, bool ) = snapshot.run_analyzer;
+		GET_VARIABLE( g_variables.m_movement_chat_prints, bool ) = snapshot.movement_chat;
+		GET_VARIABLE( g_variables.m_bind_overlay, bool ) = snapshot.bind_overlay;
+		GET_VARIABLE( g_variables.m_px_database, bool ) = snapshot.px_database;
+		GET_VARIABLE( g_variables.m_px_database_auto_record, bool ) = snapshot.px_auto_record;
+		GET_VARIABLE( g_variables.m_footstep_fx_enabled, bool ) = snapshot.footstep_fx;
+		GET_VARIABLE( g_variables.m_edgebug_particles, bool ) = snapshot.eb_particles;
+		GET_VARIABLE( g_variables.m_bullet_tracer, bool ) = snapshot.bullet_tracer;
+		GET_VARIABLE( g_variables.m_bloom, bool ) = snapshot.bloom;
+		GET_VARIABLE( g_variables.m_dof, bool ) = snapshot.dof;
+		GET_VARIABLE( g_variables.m_engine_ambient_light, bool ) = snapshot.ambient;
+		GET_VARIABLE( g_variables.m_world_modulation, bool ) = snapshot.world_modulation;
+		GET_VARIABLE( g_variables.m_velocity_trail, bool ) = snapshot.velocity_trail;
+		GET_VARIABLE( g_variables.m_local_afterimage, bool ) = snapshot.afterimage;
+		GET_VARIABLE( g_variables.m_jump_trail, bool ) = snapshot.jump_trail;
+		GET_VARIABLE( g_variables.m_speedometer_style, int ) = snapshot.speedometer_style;
+	}
+
+	void apply_session_preset( const int preset )
+	{
+		drainware_stability_breadcrumb( "session_preset_apply" );
+		g_last_preset_snapshot = capture_preset_snapshot( );
+
+		switch ( preset ) {
+		case 0: // Clean
+			GET_VARIABLE( g_variables.m_watermark_mode, int ) = 1;
+			GET_VARIABLE( g_variables.m_debug_logging, bool ) = false;
+			GET_VARIABLE( g_variables.m_footstep_fx_enabled, bool ) = false;
+			GET_VARIABLE( g_variables.m_edgebug_particles, bool ) = false;
+			GET_VARIABLE( g_variables.m_bullet_tracer, bool ) = false;
+			GET_VARIABLE( g_variables.m_bloom, bool ) = false;
+			GET_VARIABLE( g_variables.m_dof, bool ) = false;
+			GET_VARIABLE( g_variables.m_velocity_trail, bool ) = false;
+			GET_VARIABLE( g_variables.m_local_afterimage, bool ) = false;
+			break;
+		case 1: // Movement Practice
+			GET_VARIABLE( g_variables.m_speedometer, bool ) = true;
+			GET_VARIABLE( g_variables.m_run_analyzer, bool ) = true;
+			GET_VARIABLE( g_variables.m_movement_chat_prints, bool ) = true;
+			GET_VARIABLE( g_variables.m_bind_overlay, bool ) = true;
+			GET_VARIABLE( g_variables.m_debug_logging, bool ) = false;
+			break;
+		case 2: // Debug Mode
+			GET_VARIABLE( g_variables.m_debug_logging, bool ) = true;
+			GET_VARIABLE( g_variables.m_debug_log_particles, bool ) = true;
+			GET_VARIABLE( g_variables.m_debug_log_sound, bool ) = true;
+			GET_VARIABLE( g_variables.m_run_analyzer, bool ) = true;
+			break;
+		case 3: // KZ / Surf
+			GET_VARIABLE( g_variables.m_px_database, bool ) = true;
+			GET_VARIABLE( g_variables.m_px_database_auto_record, bool ) = true;
+			GET_VARIABLE( g_variables.m_speedometer, bool ) = true;
+			GET_VARIABLE( g_variables.m_run_analyzer, bool ) = true;
+			GET_VARIABLE( g_variables.m_bloom, bool ) = false;
+			GET_VARIABLE( g_variables.m_dof, bool ) = false;
+			break;
+		case 4: // Low FPS
+			GET_VARIABLE( g_variables.m_footstep_fx_enabled, bool ) = false;
+			GET_VARIABLE( g_variables.m_edgebug_particles, bool ) = false;
+			GET_VARIABLE( g_variables.m_bullet_tracer, bool ) = false;
+			GET_VARIABLE( g_variables.m_bloom, bool ) = false;
+			GET_VARIABLE( g_variables.m_dof, bool ) = false;
+			GET_VARIABLE( g_variables.m_velocity_trail, bool ) = false;
+			GET_VARIABLE( g_variables.m_local_afterimage, bool ) = false;
+			GET_VARIABLE( g_variables.m_jump_trail, bool ) = false;
+			break;
+		case 5: // Cinematic
+			GET_VARIABLE( g_variables.m_watermark_mode, int ) = 1;
+			GET_VARIABLE( g_variables.m_world_modulation, bool ) = true;
+			GET_VARIABLE( g_variables.m_bloom, bool ) = true;
+			GET_VARIABLE( g_variables.m_engine_ambient_light, bool ) = true;
+			GET_VARIABLE( g_variables.m_speedometer, bool ) = true;
+			GET_VARIABLE( g_variables.m_speedometer_style, int ) = 0;
+			break;
+		default:
+			break;
+		}
+	}
+
+	const char* preset_preview( const int preset )
+	{
+		switch ( preset ) {
+		case 0:
+			return "Clean: watermark on, debug off, heavy particles/post effects/trails off.";
+		case 1:
+			return "Movement Practice: speedometer, run analyzer, chat prints, and bind overlay on.";
+		case 2:
+			return "Debug Mode: debug logging plus particle/sound/run analyzer diagnostics on.";
+		case 3:
+			return "KZ / Surf: PX database + auto-record, speedometer, run analyzer, heavy post effects off.";
+		case 4:
+			return "Low FPS: disables heavy particles, bloom, DOF, afterimage, trails, and jump trail.";
+		case 5:
+			return "Cinematic: slim watermark, world modulation, bloom, ambient light, minimal speedometer.";
+		default:
+			return "Pick a preset to preview exact changes before applying.";
+		}
+	}
+
+	void apply_theme_preset( const int preset )
+	{
+		drainware_stability_breadcrumb( "theme_preset_apply" );
+		switch ( preset ) {
+		case 0:
+			GET_VARIABLE( g_variables.m_accent, c_color ) = c_color( 174, 255, 0, 255 );
+			GET_VARIABLE( g_variables.m_theme_corner_radius, float ) = 6.f;
+			GET_VARIABLE( g_variables.m_theme_glow_strength, float ) = 0.35f;
+			break;
+		case 1:
+			GET_VARIABLE( g_variables.m_accent, c_color ) = c_color( 60, 255, 120, 255 );
+			GET_VARIABLE( g_variables.m_theme_corner_radius, float ) = 7.f;
+			GET_VARIABLE( g_variables.m_theme_background_alpha, float ) = 0.92f;
+			break;
+		case 2:
+			GET_VARIABLE( g_variables.m_accent, c_color ) = c_color( 190, 190, 190, 255 );
+			GET_VARIABLE( g_variables.m_theme_corner_radius, float ) = 2.f;
+			GET_VARIABLE( g_variables.m_theme_glow_strength, float ) = 0.08f;
+			break;
+		case 3:
+			GET_VARIABLE( g_variables.m_accent, c_color ) = c_color( 255, 90, 90, 255 );
+			GET_VARIABLE( g_variables.m_theme_background_alpha, float ) = 1.f;
+			GET_VARIABLE( g_variables.m_theme_glow_strength, float ) = 0.2f;
+			break;
+		case 4:
+			GET_VARIABLE( g_variables.m_accent, c_color ) = c_color( 220, 220, 220, 255 );
+			GET_VARIABLE( g_variables.m_theme_corner_radius, float ) = 4.f;
+			GET_VARIABLE( g_variables.m_theme_glow_strength, float ) = 0.f;
+			break;
+		default:
+			break;
+		}
+	}
+
+	bool command_matches( const char* label, const std::string& query )
+	{
+		if ( query.empty( ) )
+			return true;
+
+		return lower_copy( label ).find( query ) != std::string::npos;
+	}
+
+	void help_marker( const char* text )
+	{
+		ImGui::SameLine( );
+		ImGui::TextDisabled( "(?)" );
+		if ( ImGui::IsItemHovered( ) )
+			ImGui::SetTooltip( "%s", text );
+	}
+
+	void inspector_info( const char* variable, const char* value, const char* risk, const char* last_error )
+	{
+		if ( !GET_VARIABLE( g_variables.m_session_inspector_mode, bool ) || !ImGui::IsItemHovered( ) )
+			return;
+
+		ImGui::BeginTooltip( );
+		ImGui::Text( "variable: %s", variable ? variable : "unknown" );
+		ImGui::Text( "value: %s", value ? value : "unknown" );
+		ImGui::Text( "risk: %s", risk ? risk : "stable" );
+		ImGui::TextWrapped( "last error: %s", last_error ? last_error : "none" );
+		ImGui::EndTooltip( );
+	}
+
+	std::filesystem::path stable_snapshot_path( )
+	{
+		return g_config.m_path / ( std::string( "stable_snapshot" ) + n_branding::k_config_extension );
+	}
+
+	bool export_stable_snapshot_to_clipboard( )
+	{
+		std::ifstream file( stable_snapshot_path( ), std::ios::in );
+		if ( !file.good( ) )
+			return false;
+
+		std::ostringstream contents;
+		contents << file.rdbuf( );
+		ImGui::SetClipboardText( contents.str( ).c_str( ) );
+		return true;
+	}
+
+	bool import_stable_snapshot_from_clipboard( )
+	{
+		const char* clipboard = ImGui::GetClipboardText( );
+		if ( !clipboard || !clipboard[ 0 ] )
+			return false;
+
+		std::ofstream file( stable_snapshot_path( ), std::ios::out | std::ios::trunc );
+		if ( !file.good( ) )
+			return false;
+
+		file << clipboard;
+		file.close( );
+		return g_misc.restore_stable_snapshot( );
+	}
+
+	std::filesystem::path theme_snapshot_path( )
+	{
+		return g_config.m_path / "theme_snapshot.txt";
+	}
+
+	bool save_theme_snapshot( )
+	{
+		drainware_stability_breadcrumb( "theme_save" );
+		std::filesystem::create_directories( g_config.m_path );
+		std::ofstream file( theme_snapshot_path( ), std::ios::trunc );
+		if ( !file.good( ) )
+			return false;
+
+		const auto accent = GET_VARIABLE( g_variables.m_accent, c_color );
+		file << "accent " << int( accent.get< e_color_type::color_type_r >( ) ) << ' ' << int( accent.get< e_color_type::color_type_g >( ) ) << ' '
+		     << int( accent.get< e_color_type::color_type_b >( ) ) << ' ' << int( accent.get< e_color_type::color_type_a >( ) ) << '\n'
+		     << "background_alpha " << GET_VARIABLE( g_variables.m_theme_background_alpha, float ) << '\n'
+		     << "border_alpha " << GET_VARIABLE( g_variables.m_theme_border_alpha, float ) << '\n'
+		     << "corner_radius " << GET_VARIABLE( g_variables.m_theme_corner_radius, float ) << '\n'
+		     << "group_spacing " << GET_VARIABLE( g_variables.m_menu_section_spacing, float ) << '\n'
+		     << "column_spacing " << GET_VARIABLE( g_variables.m_theme_column_spacing, float ) << '\n'
+		     << "menu_scale " << GET_VARIABLE( g_variables.m_menu_scale, float ) << '\n'
+		     << "font_scale " << GET_VARIABLE( g_variables.m_theme_font_scale, float ) << '\n'
+		     << "animation_speed " << GET_VARIABLE( g_variables.m_ui_animation_speed, float ) << '\n'
+		     << "glow_strength " << GET_VARIABLE( g_variables.m_theme_glow_strength, float ) << '\n'
+		     << "layout_mode " << GET_VARIABLE( g_variables.m_theme_layout_mode, int ) << '\n'
+		     << "columns " << GET_VARIABLE( g_variables.m_theme_columns, int ) << '\n';
+		return true;
+	}
+
+	bool load_theme_snapshot( )
+	{
+		drainware_stability_breadcrumb( "theme_load" );
+		std::ifstream file( theme_snapshot_path( ) );
+		if ( !file.good( ) )
+			return false;
+
+		std::string key;
+		while ( file >> key ) {
+			if ( key == "accent" ) {
+				int r = 174, g = 255, b = 0, a = 255;
+				file >> r >> g >> b >> a;
+				GET_VARIABLE( g_variables.m_accent, c_color ) = c_color( r, g, b, a );
+			} else if ( key == "background_alpha" ) {
+				file >> GET_VARIABLE( g_variables.m_theme_background_alpha, float );
+			} else if ( key == "border_alpha" ) {
+				file >> GET_VARIABLE( g_variables.m_theme_border_alpha, float );
+			} else if ( key == "corner_radius" ) {
+				file >> GET_VARIABLE( g_variables.m_theme_corner_radius, float );
+			} else if ( key == "group_spacing" ) {
+				file >> GET_VARIABLE( g_variables.m_menu_section_spacing, float );
+			} else if ( key == "column_spacing" ) {
+				file >> GET_VARIABLE( g_variables.m_theme_column_spacing, float );
+			} else if ( key == "menu_scale" ) {
+				file >> GET_VARIABLE( g_variables.m_menu_scale, float );
+			} else if ( key == "font_scale" ) {
+				file >> GET_VARIABLE( g_variables.m_theme_font_scale, float );
+			} else if ( key == "animation_speed" ) {
+				file >> GET_VARIABLE( g_variables.m_ui_animation_speed, float );
+			} else if ( key == "glow_strength" ) {
+				file >> GET_VARIABLE( g_variables.m_theme_glow_strength, float );
+			} else if ( key == "layout_mode" ) {
+				file >> GET_VARIABLE( g_variables.m_theme_layout_mode, int );
+			} else if ( key == "columns" ) {
+				file >> GET_VARIABLE( g_variables.m_theme_columns, int );
+			}
+		}
+		return true;
+	}
+
+	void draw_command_palette( )
+	{
+		if ( ( GetAsyncKeyState( VK_CONTROL ) & 0x8000 ) && ( GetAsyncKeyState( 'K' ) & 1 ) )
+			ImGui::OpenPopup( "command palette" );
+
+		ImGui::SetNextWindowSize( ImVec2( 360.f, 260.f ), ImGuiCond_Always );
+		if ( !ImGui::BeginPopup( "command palette" ) )
+			return;
+
+		static char query_buffer[ 96 ]{ };
+		ImGui::InputTextWithHint( "##command_palette_query", "search features, debug tools, config actions", query_buffer,
+		                          IM_ARRAYSIZE( query_buffer ) );
+		const std::string query = lower_copy( query_buffer );
+		ImGui::Separator( );
+
+		auto result = [ & ]( const char* label, const int tab, const int subtab ) {
+			if ( !command_matches( label, query ) )
+				return;
+
+			if ( ImGui::Selectable( label ) ) {
+				tab_number = tab;
+				subtab_number = subtab;
+				ImGui::CloseCurrentPopup( );
+			}
+		};
+		auto action = [ & ]( const char* label, const std::function< void( ) >& fn ) {
+			if ( !command_matches( label, query ) )
+				return;
+
+			if ( ImGui::Selectable( label ) ) {
+				fn( );
+				ImGui::CloseCurrentPopup( );
+			}
+		};
+
+		result( "session hub live run", 8, 0 );
+		result( "session hub presets", 8, 1 );
+		result( "theme builder", 8, 2 );
+		result( "particles / particle lab", 9, 1 );
+		result( "system health", 9, 0 );
+		result( "bind conflicts", 9, 2 );
+		result( "edgebug status", 8, 0 );
+		result( "chat prints edgebugged", 2, 0 );
+		result( "edgebug particles", 3, 0 );
+		result( "watermark", 7, 0 );
+		result( "world modulation", 1, 1 );
+		result( "edgebug movement", 3, 0 );
+		result( "pixelsurf database", 3, 0 );
+		result( "config", 6, 0 );
+		action( "panic restore", []( ) { g_misc.request_panic_restore( ); } );
+		action( "clear debug log", []( ) { g_misc.clear_debug_log( ); } );
+
+		ImGui::EndPopup( );
+	}
+
+	void draw_status_bar( )
+	{
+		const auto snapshot = g_misc.get_health_snapshot( );
+		const ImVec2 position = ImGui::GetWindowPos( );
+		const ImVec2 size = ImGui::GetWindowSize( );
+		const ImVec2 min = position + ImVec2( 10.f, size.y - 25.f );
+		const ImVec2 max = position + ImVec2( size.x - 10.f, size.y - 7.f );
+		const auto draw_list = ImGui::GetWindowDrawList( );
+
+		draw_list->AddRectFilled( min, max, ImColor( 12, 12, 12, int( 220 * g_menu.m_animation_progress ) ), 4.f );
+		draw_list->AddRect( min, max, ImColor( GET_VARIABLE( g_variables.m_accent, c_color ).get_u32( 0.35f * g_menu.m_animation_progress ) ),
+		                     4.f );
+
+		const std::string text = std::string( "guard: " ) + snapshot.prediction_guard + " | particles: " + snapshot.particles +
+		                         " | sound: " + snapshot.sound_guard + " | last: " + snapshot.last_error;
+		draw_list->AddText( min + ImVec2( 7.f, 2.f ), ImColor( 190, 190, 190, int( 255 * g_menu.m_animation_progress ) ),
+		                    text.c_str( ) );
+	}
+}
+
 void n_menu::impl_t::on_end_scene( )
 {
 	ImGui::GetStyle( ).Colors[ ImGuiCol_::ImGuiCol_Accent ] = GET_VARIABLE( g_variables.m_accent, c_color ).get_vec4( );
+	m_animation_speed = std::clamp( GET_VARIABLE( g_variables.m_ui_animation_speed, float ), 0.6f, 8.f );
 
 	// Обновление прогресса анимации (оставляем как есть)
 	float delta_time = ImGui::GetIO( ).DeltaTime;
@@ -451,14 +925,23 @@ void n_menu::impl_t::on_end_scene( )
 
 	{
 		auto& style                                   = ImGui::GetStyle( );
-		style.Colors[ ImGuiCol_::ImGuiCol_WindowBg ]  = ImVec4( 10 / 255.f, 10 / 255.f, 10 / 255.f, float( 1.f * g_menu.m_animation_progress ) );
-		style.Colors[ ImGuiCol_::ImGuiCol_ChildBg ]   = ImVec4( 15 / 255.f, 15 / 255.f, 15 / 255.f, float( 1.f * g_menu.m_animation_progress ) );
+		const float theme_bg_alpha = std::clamp( GET_VARIABLE( g_variables.m_theme_background_alpha, float ), 0.25f, 1.f );
+		const float theme_border_alpha = std::clamp( GET_VARIABLE( g_variables.m_theme_border_alpha, float ), 0.f, 1.f );
+		const float theme_rounding = std::clamp( GET_VARIABLE( g_variables.m_theme_corner_radius, float ), 0.f, 12.f );
+		style.WindowRounding = theme_rounding;
+		style.ChildRounding = theme_rounding;
+		style.FrameRounding = std::clamp( theme_rounding * 0.65f, 0.f, 8.f );
+		style.PopupRounding = theme_rounding;
+		style.WindowBorderSize = theme_border_alpha > 0.01f ? 1.f : 0.f;
+		ImGui::GetIO( ).FontGlobalScale = std::clamp( GET_VARIABLE( g_variables.m_theme_font_scale, float ), 0.85f, 1.15f );
+		style.Colors[ ImGuiCol_::ImGuiCol_WindowBg ]  = ImVec4( 10 / 255.f, 10 / 255.f, 10 / 255.f, float( theme_bg_alpha * g_menu.m_animation_progress ) );
+		style.Colors[ ImGuiCol_::ImGuiCol_ChildBg ]   = ImVec4( 15 / 255.f, 15 / 255.f, 15 / 255.f, float( theme_bg_alpha * g_menu.m_animation_progress ) );
 		style.Colors[ ImGuiCol_::ImGuiCol_FrameBg ]   = ImVec4( 25 / 255.f, 25 / 255.f, 25 / 255.f, float( 1.f * g_menu.m_animation_progress ) );
 		style.Colors[ ImGuiCol_::ImGuiCol_PopupBg ]   = ImVec4( 20 / 255.f, 20 / 255.f, 20 / 255.f, float( 1.f * g_menu.m_animation_progress ) );
 		style.Colors[ ImGuiCol_::ImGuiCol_CheckMark ] = ImVec4( 0 / 255.f, 0 / 255.f, 0 / 255.f, float( 1.f * g_menu.m_animation_progress ) );
 		style.Colors[ ImGuiCol_::ImGuiCol_Button ]    = ImVec4( 20 / 255.f, 20 / 255.f, 20 / 255.f, float( 1.f * g_menu.m_animation_progress ) );
 
-		style.Colors[ ImGuiCol_::ImGuiCol_Border ]       = ImVec4( 0 / 255.f, 0 / 255.f, 0 / 255.f, 0.f );
+		style.Colors[ ImGuiCol_::ImGuiCol_Border ]       = ImVec4( 25 / 255.f, 25 / 255.f, 25 / 255.f, theme_border_alpha * g_menu.m_animation_progress );
 		style.Colors[ ImGuiCol_::ImGuiCol_BorderShadow ] = ImVec4( 0 / 255.f, 0 / 255.f, 0 / 255.f, 0.f );
 		style.Colors[ ImGuiCol_Text ]                    = ImVec4( 230 / 255.f, 230 / 255.f, 230 / 255.f, 1.f * g_menu.m_animation_progress );
 		style.Colors[ ImGuiCol_TextDisabled ]            = ImVec4( 128 / 255.f, 128 / 255.f, 128 / 255.f, 1.f * g_menu.m_animation_progress );
@@ -508,10 +991,16 @@ void n_menu::impl_t::on_end_scene( )
 		// Для затемнения окон при навигации или модальных окнах можно задать меньшую альфу:
 		style.Colors[ ImGuiCol_NavWindowingDimBg ] = ImVec4( 0 / 255.f, 0 / 255.f, 0 / 255.f, 0.5f * g_menu.m_animation_progress );
 		style.Colors[ ImGuiCol_ModalWindowDimBg ]  = ImVec4( 0 / 255.f, 0 / 255.f, 0 / 255.f, 0.5f * g_menu.m_animation_progress );
+		style.ItemSpacing.y = std::clamp( GET_VARIABLE( g_variables.m_menu_section_spacing, float ), 3.f, 16.f );
+		style.ItemSpacing.x = std::clamp( GET_VARIABLE( g_variables.m_theme_column_spacing, float ), 4.f, 22.f );
 	}
 
-	const float menu_scale = 0.975f + 0.025f * ( m_animation_progress * m_animation_progress * ( 3.f - 2.f * m_animation_progress ) );
-	ImGui::SetNextWindowSize( ImVec2( 650.f, 520.f ) * menu_scale, ImGuiCond_::ImGuiCond_Always );
+	const float configured_menu_scale = std::clamp( GET_VARIABLE( g_variables.m_menu_scale, float ), 0.8f, 1.25f );
+	const float layout_width = GET_VARIABLE( g_variables.m_theme_layout_mode, int ) == 1 ? 735.f : 650.f;
+	const float column_bonus = std::clamp( GET_VARIABLE( g_variables.m_theme_columns, int ), 0, 3 ) * 8.f;
+	const float menu_scale = configured_menu_scale *
+	                         ( 0.975f + 0.025f * ( m_animation_progress * m_animation_progress * ( 3.f - 2.f * m_animation_progress ) ) );
+	ImGui::SetNextWindowSize( ImVec2( layout_width + column_bonus, 520.f ) * menu_scale, ImGuiCond_::ImGuiCond_Always );
 	ImGui::Begin( n_branding::k_client_name, nullptr,
 	              ImGuiWindowFlags_::ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_::ImGuiWindowFlags_NoBackground |
 	                  ImGuiWindowFlags_::ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_::ImGuiWindowFlags_NoCollapse |
@@ -523,6 +1012,14 @@ void n_menu::impl_t::on_end_scene( )
 		                                                ImColor( 7, 7, 7, int(255 * m_animation_progress) ), 6.0f, ImDrawFlags_RoundCornersAll );
 		ImGui::GetBackgroundDrawList( )->AddRect( ImGui::GetWindowPos( ), ImGui::GetWindowPos( ) + ImGui::GetWindowSize( ),
 		                                          ImColor( 25, 25, 25, int( 255 * m_animation_progress ) ), 6.0f, ImDrawFlags_RoundCornersAll );
+		const float glow_strength = std::clamp( GET_VARIABLE( g_variables.m_theme_glow_strength, float ), 0.f, 1.f );
+		if ( glow_strength > 0.01f ) {
+			const auto glow = ImColor( GET_VARIABLE( g_variables.m_accent, c_color ).get_u32( glow_strength * 65.f / 255.f * m_animation_progress ) );
+			ImGui::GetBackgroundDrawList( )->AddRect( ImGui::GetWindowPos( ) - ImVec2( 2.f, 2.f ),
+			                                          ImGui::GetWindowPos( ) + ImGui::GetWindowSize( ) + ImVec2( 2.f, 2.f ), glow,
+			                                          std::clamp( GET_VARIABLE( g_variables.m_theme_corner_radius, float ), 0.f, 12.f ) + 2.f,
+			                                          ImDrawFlags_RoundCornersAll, 2.f );
+		}
 		if ( const auto logo_texture = get_menu_logo_texture( ) ) {
 			const auto logo_min = ImGui::GetWindowPos( ) + ImVec2( 30.0f, 30.0f );
 			const auto logo_max = logo_min + ImVec2( 92.0f, 42.0f );
@@ -539,7 +1036,9 @@ void n_menu::impl_t::on_end_scene( )
 			                          { "skins", "D", { "general" } },
 			                          { "fonts", "I", { "general" } },
 			                          { "config", "G", { "general" } },
-			                          { "lua", "L", { "general" } } };
+			                          { "lua", "L", { "general" } },
+			                          { "session hub", "H", { "live", "presets", "theme" } },
+			                          { "debug", "J", { "health", "particles", "binds" } } };
 
 		if ( tab_number >= static_cast< int >( tabs.size( ) ) ) {
 			tab_number = 0;
@@ -547,6 +1046,7 @@ void n_menu::impl_t::on_end_scene( )
 		}
 
 		custom_tabs( tabs );
+		draw_command_palette( );
 
 		ImGui::PushFont( fonts_for_gui::regular );
 
@@ -2015,6 +2515,287 @@ void n_menu::impl_t::on_end_scene( )
 				checkbox( "media player", &GET_VARIABLE( g_variables.trackdispay, bool ) );
 			} );
 		}
+
+		if ( tab_number == 8 ) {
+			if ( subtab_number == 0 ) {
+				const auto session = g_misc.get_session_hub_snapshot( );
+				const auto health = g_misc.get_health_snapshot( );
+				ImGui::SetCursorPos( ImVec2( 150.0f, 10.0f ) );
+				child( "live run", ImVec2( 230.0f, 205.0f ), [ & ]( ) {
+					ImGui::TextWrapped( "status: %s", session.run_status.c_str( ) );
+					ImGui::TextWrapped( "max speed: %d", session.run_max_speed );
+					ImGui::TextWrapped( "combo: %s", session.run_combo.c_str( ) );
+					ImGui::TextWrapped( "last tech: %s", session.last_tech.c_str( ) );
+					ImGui::TextWrapped( "last fail: %s", session.last_fail_reason.c_str( ) );
+					ImGui::Separator( );
+					ImGui::TextWrapped( "%s", session.last_run_summary.c_str( ) );
+				} );
+				ImGui::SetCursorPos( ImVec2( 390.0f, 10.0f ) );
+				child( "movement assist status", ImVec2( 230.0f, 205.0f ), [ & ]( ) {
+					ImGui::TextWrapped( "AST / PX assist: %s", session.pixelsurf_assist_status.c_str( ) );
+					ImGui::TextWrapped( "EB: %s", session.edgebug_status.c_str( ) );
+					ImGui::TextWrapped( "JB: %s", session.jumpbug_status.c_str( ) );
+					ImGui::TextWrapped( "PX database: %s", session.px_database_status.c_str( ) );
+					ImGui::TextWrapped( "PX lines: %d", session.px_lines_current_map );
+					ImGui::TextWrapped( "map profile: %s", session.current_map_profile.c_str( ) );
+				} );
+				ImGui::SetCursorPos( ImVec2( 150.0f, 230.0f ) );
+				child( "safety status", ImVec2( 230.0f, 210.0f ), [ & ]( ) {
+					ImGui::TextWrapped( "prediction guard: %s", health.prediction_guard.c_str( ) );
+					ImGui::TextWrapped( "sound guard: %s", health.sound_guard.c_str( ) );
+					ImGui::TextWrapped( "particle mode: %s", session.particle_mode.c_str( ) );
+					ImGui::TextWrapped( "particle table: %d", session.particle_table_count );
+					ImGui::TextWrapped( "last particle: %s", session.last_particle_error.c_str( ) );
+					ImGui::TextWrapped( "last sound: %s", health.last_suppressed_sound.c_str( ) );
+					ImGui::TextWrapped( "breadcrumb: %s", health.last_action.c_str( ) );
+				} );
+				ImGui::SetCursorPos( ImVec2( 390.0f, 230.0f ) );
+				child( "quick actions", ImVec2( 230.0f, 210.0f ), []( ) {
+					if ( button( "panic / restore", ImVec2( 210, 0 ) ) )
+						g_misc.request_panic_restore( );
+					if ( button( "clear debug log", ImVec2( 210, 0 ) ) )
+						g_misc.clear_debug_log( );
+					if ( button( "dump particle table", ImVec2( 210, 0 ) ) )
+						g_misc.dump_particle_table( );
+					if ( button( "revalidate particles", ImVec2( 210, 0 ) ) )
+						g_misc.request_particle_debug_test( 3 );
+					if ( button( "save stable config", ImVec2( 210, 0 ) ) )
+						g_misc.save_stable_snapshot( );
+					if ( button( "restore stable config", ImVec2( 210, 0 ) ) )
+						g_misc.restore_stable_snapshot( );
+					if ( button( "save map profile", ImVec2( 210, 0 ) ) )
+						g_misc.save_current_map_profile( );
+					if ( button( "reload map profile", ImVec2( 210, 0 ) ) )
+						g_misc.reload_current_map_profile( );
+				} );
+			}
+
+			if ( subtab_number == 1 ) {
+				ImGui::SetCursorPos( ImVec2( 150.0f, 10.0f ) );
+				child( "smart presets", ImVec2( 230.0f, 430.0f ), []( ) {
+					const char* presets[] = { "Clean", "Movement Practice", "Debug Mode", "KZ / Surf", "Low FPS", "Cinematic" };
+					for ( int i = 0; i < IM_ARRAYSIZE( presets ); ++i ) {
+						if ( button( presets[ i ], ImVec2( 210, 0 ) ) )
+							GET_VARIABLE( g_variables.m_session_pending_preset, int ) = i;
+					}
+					ImGui::Separator( );
+					const int pending = GET_VARIABLE( g_variables.m_session_pending_preset, int );
+					ImGui::TextWrapped( "%s", preset_preview( pending ) );
+					if ( pending >= 0 && button( "apply previewed preset", ImVec2( 210, 0 ) ) )
+						apply_session_preset( pending );
+					if ( g_last_preset_snapshot.valid && button( "undo last preset", ImVec2( 210, 0 ) ) )
+						restore_preset_snapshot( g_last_preset_snapshot );
+				} );
+
+				ImGui::SetCursorPos( ImVec2( 390.0f, 10.0f ) );
+				child( "coach / favorites", ImVec2( 230.0f, 430.0f ), []( ) {
+					const auto session = g_misc.get_session_hub_snapshot( );
+					checkbox( "movement coach", &GET_VARIABLE( g_variables.m_session_movement_coach, bool ) );
+					inspector_info( "m_session_movement_coach", GET_VARIABLE( g_variables.m_session_movement_coach, bool ) ? "true" : "false",
+					                "stable", session.coach_feedback.c_str( ) );
+					const char* coach_outputs[] = { "session hub only", "chat print", "debug log" };
+					combo( "coach output", GET_VARIABLE( g_variables.m_session_movement_coach_output, int ), coach_outputs,
+					       IM_ARRAYSIZE( coach_outputs ) );
+					ImGui::TextWrapped( "feedback: %s", session.coach_feedback.c_str( ) );
+					ImGui::Separator( );
+					if ( button( "favorite debug particle", ImVec2( 210, 0 ) ) )
+						add_particle_favorite( GET_VARIABLE( g_variables.m_particle_debug_particle, int ) );
+					auto favorites = split_favorites( GET_VARIABLE( g_variables.m_particle_favorites, std::string ) );
+					if ( favorites.empty( ) ) {
+						ImGui::TextWrapped( "no particle favorites yet" );
+					} else {
+						for ( const auto& favorite : favorites ) {
+							const int index = particle_index_by_label( favorite );
+							ImGui::TextWrapped( "%s", favorite.c_str( ) );
+							if ( index > 0 ) {
+								if ( ImGui::SmallButton( ( "footstep##" + favorite ).c_str( ) ) )
+									GET_VARIABLE( g_variables.m_footstep_fx_mode, int ) = index;
+								ImGui::SameLine( );
+								if ( ImGui::SmallButton( ( "eb##" + favorite ).c_str( ) ) )
+									GET_VARIABLE( g_variables.m_edgebug_particle_type, int ) = index;
+								ImGui::SameLine( );
+								if ( ImGui::SmallButton( ( "tracer##" + favorite ).c_str( ) ) )
+									GET_VARIABLE( g_variables.m_bullet_tracer_type, int ) = index;
+							}
+						}
+					}
+					if ( button( "clear favorites", ImVec2( 210, 0 ) ) )
+						GET_VARIABLE( g_variables.m_particle_favorites, std::string ).clear( );
+				} );
+			}
+
+			if ( subtab_number == 2 ) {
+				ImGui::SetCursorPos( ImVec2( 150.0f, 10.0f ) );
+				child( "theme builder", ImVec2( 230.0f, 430.0f ), []( ) {
+					checkbox( "inspector mode", &GET_VARIABLE( g_variables.m_session_inspector_mode, bool ) );
+					ImGui::Text( "accent color" );
+					ImGui::ColorEdit4( "##theme accent", &GET_VARIABLE( g_variables.m_accent, c_color ), color_picker_alpha_flags );
+					inspector_info( "m_accent", "color", "stable", "none" );
+					slider_float( "background alpha", &GET_VARIABLE( g_variables.m_theme_background_alpha, float ), 0.25f, 1.f, "%.2f" );
+					slider_float( "border alpha", &GET_VARIABLE( g_variables.m_theme_border_alpha, float ), 0.f, 1.f, "%.2f" );
+					slider_float( "corner radius", &GET_VARIABLE( g_variables.m_theme_corner_radius, float ), 0.f, 12.f, "%.0f" );
+					slider_float( "group spacing", &GET_VARIABLE( g_variables.m_menu_section_spacing, float ), 3.f, 16.f, "%.0f" );
+					slider_float( "column spacing", &GET_VARIABLE( g_variables.m_theme_column_spacing, float ), 4.f, 22.f, "%.0f" );
+					slider_float( "menu scale", &GET_VARIABLE( g_variables.m_menu_scale, float ), 0.8f, 1.25f, "%.2fx" );
+					slider_float( "font scale", &GET_VARIABLE( g_variables.m_theme_font_scale, float ), 0.85f, 1.15f, "%.2fx" );
+					slider_float( "animation speed", &GET_VARIABLE( g_variables.m_ui_animation_speed, float ), 0.6f, 8.f, "%.1fx" );
+					slider_float( "glow strength", &GET_VARIABLE( g_variables.m_theme_glow_strength, float ), 0.f, 1.f, "%.2f" );
+				} );
+
+				ImGui::SetCursorPos( ImVec2( 390.0f, 10.0f ) );
+				child( "theme presets", ImVec2( 230.0f, 430.0f ), []( ) {
+					const char* layouts[] = { "compact", "wide" };
+					const char* columns[] = { "auto", "1 column", "2 columns", "3 columns" };
+					combo( "layout", GET_VARIABLE( g_variables.m_theme_layout_mode, int ), layouts, IM_ARRAYSIZE( layouts ) );
+					combo( "columns", GET_VARIABLE( g_variables.m_theme_columns, int ), columns, IM_ARRAYSIZE( columns ) );
+					const char* presets[] = { "FakeDrain Lime", "Clarity Slim", "s0beit Classic", "Debug Dark", "Minimal" };
+					combo( "theme preset", GET_VARIABLE( g_variables.m_theme_preset, int ), presets, IM_ARRAYSIZE( presets ) );
+					if ( button( "apply theme preset", ImVec2( 210, 0 ) ) )
+						apply_theme_preset( GET_VARIABLE( g_variables.m_theme_preset, int ) );
+					if ( button( "save theme", ImVec2( 210, 0 ) ) )
+						save_theme_snapshot( );
+					if ( button( "load theme", ImVec2( 210, 0 ) ) )
+						load_theme_snapshot( );
+					if ( button( "reset theme", ImVec2( 210, 0 ) ) ) {
+						GET_VARIABLE( g_variables.m_accent, c_color ) = c_color( 174, 255, 0, 255 );
+						GET_VARIABLE( g_variables.m_theme_background_alpha, float ) = 1.f;
+						GET_VARIABLE( g_variables.m_theme_border_alpha, float ) = 1.f;
+						GET_VARIABLE( g_variables.m_theme_corner_radius, float ) = 6.f;
+						GET_VARIABLE( g_variables.m_menu_section_spacing, float ) = 8.f;
+						GET_VARIABLE( g_variables.m_theme_column_spacing, float ) = 10.f;
+						GET_VARIABLE( g_variables.m_menu_scale, float ) = 1.f;
+						GET_VARIABLE( g_variables.m_theme_font_scale, float ) = 1.f;
+						GET_VARIABLE( g_variables.m_ui_animation_speed, float ) = 2.5f;
+						GET_VARIABLE( g_variables.m_theme_glow_strength, float ) = 0.35f;
+						GET_VARIABLE( g_variables.m_theme_layout_mode, int ) = 0;
+						GET_VARIABLE( g_variables.m_theme_columns, int ) = 0;
+					}
+				} );
+			}
+		}
+
+		if ( tab_number == 9 ) {
+			if ( subtab_number == 0 ) {
+				ImGui::SetCursorPos( ImVec2( 150.0f, 10.0f ) );
+				child( "system health", ImVec2( 230.0f, 430.0f ), []( ) {
+					const auto snapshot = g_misc.get_health_snapshot( );
+					ImGui::TextWrapped( "particles: %s", snapshot.particles.c_str( ) );
+					ImGui::TextWrapped( "sound guard: %s", snapshot.sound_guard.c_str( ) );
+					ImGui::TextWrapped( "prediction guard: %s", snapshot.prediction_guard.c_str( ) );
+					ImGui::TextWrapped( "world: %s", snapshot.world_modulation.c_str( ) );
+					ImGui::TextWrapped( "inventory: %s", snapshot.inventory.c_str( ) );
+					ImGui::TextWrapped( "config: %s", snapshot.config.c_str( ) );
+					ImGui::TextWrapped( "last error: %s", snapshot.last_error.c_str( ) );
+					ImGui::TextWrapped( "last action: %s", snapshot.last_action.c_str( ) );
+					ImGui::TextWrapped( "suppressed sounds: %d", snapshot.suppressed_sounds );
+					ImGui::TextWrapped( "last suppressed: %s", snapshot.last_suppressed_sound.c_str( ) );
+					if ( button( "copy debug summary", ImVec2( 210, 0 ) ) )
+						ImGui::SetClipboardText( g_misc.debug_summary( ).c_str( ) );
+					if ( button( "clear debug log", ImVec2( 210, 0 ) ) )
+						g_misc.clear_debug_log( );
+					if ( button( "revalidate particles", ImVec2( 210, 0 ) ) )
+						g_misc.request_particle_debug_test( 3 );
+				} );
+
+				ImGui::SetCursorPos( ImVec2( 390.0f, 10.0f ) );
+				child( "recovery / config", ImVec2( 230.0f, 430.0f ), []( ) {
+					ImGui::TextWrapped( "Panic disables risky movement assists, custom movement sounds, particles, post effects, and requests visual restore." );
+					if ( button( "panic / restore", ImVec2( 210, 0 ) ) )
+						g_misc.request_panic_restore( );
+					ImGui::Text( "panic key" );
+					keybind( "panic key##debug", &GET_VARIABLE( g_variables.m_panic_key, key_bind_t ) );
+					if ( button( "sound panic mute", ImVec2( 210, 0 ) ) ) {
+						g_drainware_custom_movement_sounds_muted = true;
+						g_drainware_sound_spam_detected = true;
+					}
+					if ( button( "unmute custom sounds", ImVec2( 210, 0 ) ) ) {
+						g_drainware_custom_movement_sounds_muted = false;
+						g_drainware_sound_spam_detected = false;
+						g_drainware_suppressed_sound_count = 0;
+						g_drainware_last_suppressed_sound.clear( );
+					}
+					if ( button( "save stable snapshot", ImVec2( 210, 0 ) ) )
+						g_misc.save_stable_snapshot( );
+					if ( button( "restore stable snapshot", ImVec2( 210, 0 ) ) )
+						g_misc.restore_stable_snapshot( );
+					if ( button( "export snapshot", ImVec2( 210, 0 ) ) )
+						export_stable_snapshot_to_clipboard( );
+					if ( button( "import snapshot", ImVec2( 210, 0 ) ) )
+						import_stable_snapshot_from_clipboard( );
+					if ( button( "safe defaults", ImVec2( 210, 0 ) ) )
+						g_misc.restore_defaults( );
+					slider_float( "menu scale", &GET_VARIABLE( g_variables.m_menu_scale, float ), 0.8f, 1.25f, "%.2fx" );
+					slider_float( "ui animation speed", &GET_VARIABLE( g_variables.m_ui_animation_speed, float ), 0.6f, 8.f, "%.1fx" );
+					slider_float( "section spacing", &GET_VARIABLE( g_variables.m_menu_section_spacing, float ), 3.f, 16.f, "%.0f" );
+				} );
+			}
+
+			if ( subtab_number == 1 ) {
+				ImGui::SetCursorPos( ImVec2( 150.0f, 10.0f ) );
+				child( "particle lab", ImVec2( 230.0f, 430.0f ), []( ) {
+					const char* features[] = { "footstep", "edgebug", "bullet tracer" };
+					const char* particles[] = { "off", "surface-based", "blood impact", "blood mist", "feathers", "confetti A",
+						                     "confetti balloons", "dust devil", "water splash", "baggage drip", "molotov fireball",
+						                     "weapon confetti", "engine dust", "engine sparks", "engine smoke", "engine ring beam",
+						                     "engine lightning beam", "ambient sparks core", "weapon confetti sparks", "dust devil smoke",
+						                     "dust devil swirls", "baggage splash" };
+					checkbox( "debug logging", &GET_VARIABLE( g_variables.m_debug_logging, bool ) );
+					checkbox( "log particles", &GET_VARIABLE( g_variables.m_debug_log_particles, bool ) );
+					combo( "feature", GET_VARIABLE( g_variables.m_particle_debug_feature, int ), features, IM_ARRAYSIZE( features ) );
+					combo( "particle", GET_VARIABLE( g_variables.m_particle_debug_particle, int ), particles, IM_ARRAYSIZE( particles ) );
+					help_marker( "Use test buttons to prove a particle can dispatch before using it in Footstep FX, EB particles, or tracers." );
+					static char debug_particle_name[ 96 ]{ };
+					static std::string last_debug_particle_name;
+					auto& custom_particle_name = GET_VARIABLE( g_variables.m_particle_debug_name, std::string );
+					if ( custom_particle_name != last_debug_particle_name ) {
+						strncpy_s( debug_particle_name, sizeof( debug_particle_name ), custom_particle_name.c_str( ), _TRUNCATE );
+						last_debug_particle_name = custom_particle_name;
+					}
+					if ( input_text( "custom particle##debug_tab", debug_particle_name, debug_particle_name, IM_ARRAYSIZE( debug_particle_name ),
+					                 210.f, 20.f, NULL ) ) {
+						custom_particle_name = debug_particle_name;
+						last_debug_particle_name = custom_particle_name;
+					}
+					if ( button( "test at feet", ImVec2( 210, 0 ) ) )
+						g_misc.request_particle_debug_test( 0 );
+					if ( button( "test crosshair", ImVec2( 210, 0 ) ) )
+						g_misc.request_particle_debug_test( 1 );
+					if ( button( "test tracer", ImVec2( 210, 0 ) ) )
+						g_misc.request_particle_debug_test( 2 );
+					if ( button( "dump / revalidate", ImVec2( 210, 0 ) ) )
+						g_misc.request_particle_debug_test( 3 );
+				} );
+
+				ImGui::SetCursorPos( ImVec2( 390.0f, 10.0f ) );
+				child( "particle health", ImVec2( 230.0f, 430.0f ), []( ) {
+					const auto snapshot = g_misc.get_health_snapshot( );
+					ImGui::TextWrapped( "%s", snapshot.particles.c_str( ) );
+					ImGui::Separator( );
+					ImGui::TextWrapped( "Particle dispatch logs include string-table insertion, precache stage, dispatch stage, origin, and cooldown skips." );
+					ImGui::TextWrapped( "Normal feature dropdowns should use validated CS:GO particle system names, not .pcf filenames." );
+					if ( button( "clear debug log##particles", ImVec2( 210, 0 ) ) )
+						g_misc.clear_debug_log( );
+				} );
+			}
+
+			if ( subtab_number == 2 ) {
+				ImGui::SetCursorPos( ImVec2( 150.0f, 10.0f ) );
+				child( "bind conflicts", ImVec2( 470.0f, 430.0f ), []( ) {
+					checkbox( "show only active conflicts", &GET_VARIABLE( g_variables.m_bind_conflicts_only_active, bool ) );
+					const auto conflicts = g_misc.bind_conflicts( GET_VARIABLE( g_variables.m_bind_conflicts_only_active, bool ) );
+					if ( conflicts.empty( ) ) {
+						ImGui::TextWrapped( "No active bind conflicts found." );
+					} else {
+						for ( const auto& conflict : conflicts )
+							ImGui::TextWrapped( "%s", conflict.c_str( ) );
+					}
+					ImGui::Separator( );
+					ImGui::TextWrapped( "Ctrl+K opens the command palette. Search panic, particles, edgebug, watermark, world modulation, or config." );
+				} );
+			}
+		}
+
+		draw_status_bar( );
 
 		ImGui::PopFont( );
 	}

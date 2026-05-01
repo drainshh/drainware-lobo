@@ -1,6 +1,7 @@
 ﻿#include "movement.h"
 #include "../../game/sdk/includes/includes.h"
 #include "../../globals/includes/includes.h"
+#include "movement_assist_simulation.h"
 #include "../prediction/prediction.h"
 
 bool AlertJB                      = false;
@@ -27,9 +28,17 @@ void n_movement::impl_t::on_create_move_pre( )
 			b_buttons = g_ctx.m_cmd->m_buttons;
 
 			g_prediction.restore_entity_to_predicted_frame( g_interfaces.m_prediction->m_commands_predicted - 1 );
-			this->pixelsurf_assist( g_ctx.m_cmd );
+			{
+				ScopedMovementAssistSimulation simulation_guard( "pixelsurf_assist" );
+				ScopedMovementAssistState state_guard( g_ctx.m_local, g_ctx.m_cmd, false );
+				this->pixelsurf_assist( g_ctx.m_cmd );
+			}
 			g_prediction.restore_entity_to_predicted_frame( g_interfaces.m_prediction->m_commands_predicted - 1 );
-			this->autobounce_assist( g_ctx.m_cmd );
+			{
+				ScopedMovementAssistSimulation simulation_guard( "autobounce_assist" );
+				ScopedMovementAssistState state_guard( g_ctx.m_local, g_ctx.m_cmd, false );
+				this->autobounce_assist( g_ctx.m_cmd );
+			}
 			g_prediction.restore_entity_to_predicted_frame( g_interfaces.m_prediction->m_commands_predicted - 1 );
 			static bool off_nahui = false;
 			if ( g_input.check_input( &GET_VARIABLE( g_variables.m_pixel_surf_assist_key, key_bind_t ) ) ) {

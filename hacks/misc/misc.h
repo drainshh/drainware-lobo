@@ -17,16 +17,40 @@ namespace n_misc
 		c_color m_color             = { };
 	};
 
-	struct particle_menu_item_t {
-		int m_index = 0;
-		std::string m_label;
-		std::string m_name;
-		bool m_available = false;
-		bool m_local = false;
-		std::string m_reason;
-	};
-
 	struct impl_t {
+		struct health_snapshot_t {
+			std::string particles;
+			std::string sound_guard;
+			std::string prediction_guard;
+			std::string world_modulation;
+			std::string inventory;
+			std::string config;
+			std::string last_error;
+			std::string last_action;
+			std::string last_suppressed_sound;
+			int suppressed_sounds = 0;
+			bool custom_sounds_muted = false;
+		};
+
+		struct session_hub_snapshot_t {
+			std::string run_status = "idle";
+			int run_max_speed = 0;
+			std::string run_combo = "none";
+			std::string last_tech = "none";
+			std::string last_fail_reason = "none";
+			std::string last_run_summary = "none";
+			std::string coach_feedback = "no timing data";
+			std::string pixelsurf_assist_status = "off";
+			std::string edgebug_status = "off";
+			std::string jumpbug_status = "off";
+			std::string px_database_status = "disabled";
+			int px_lines_current_map = 0;
+			std::string current_map_profile = "none";
+			int particle_table_count = 0;
+			std::string particle_mode = "working";
+			std::string last_particle_error = "none";
+		};
+
 		struct practice_t {
 			c_angle saved_angles    = { };
 			c_vector saved_position = { };
@@ -43,13 +67,20 @@ namespace n_misc
 		void clear_debug_log( );
 		void request_particle_debug_test( int mode );
 		void request_ambient_light_restore( );
-		void revalidate_particles( );
+		void request_panic_restore( );
+		void panic_restore( );
+		health_snapshot_t get_health_snapshot( );
+		std::string debug_summary( );
+		bool save_stable_snapshot( );
+		bool restore_stable_snapshot( );
+		void restore_defaults( );
+		std::vector< std::string > bind_conflicts( bool only_active );
+		session_hub_snapshot_t get_session_hub_snapshot( );
+		bool save_current_map_profile( );
+		bool reload_current_map_profile( );
 		void dump_particle_table( );
-		const std::vector< particle_menu_item_t >& particle_menu_items( bool tracer );
-		const char* particle_mode_name( int mode );
-		bool particle_mode_available( int mode );
-		const char* particle_mode_reason( int mode );
-		int resolve_particle_fallback_mode( );
+
+		session_hub_snapshot_t m_session_hub_snapshot{ };
 
 	private:
 		void practice_window_think( );

@@ -7,6 +7,7 @@
 #include "../auto_wall/auto_wall.h"
 #include "../avatar_cache/avatar_cache.h"
 #include "../entity_cache/entity_cache.h"
+#include "../movement/movement_assist_simulation.h"
 #include "../movement/movement.h"
 #include "../instalisation fonts/fonts2.h"
 #include <algorithm>
@@ -24,7 +25,6 @@
 #include <limits>
 #include <sstream>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -172,7 +172,24 @@ namespace
 
 	bool safe_play_ui_sound( const std::string& sound_path, const char* feature, const float cooldown )
 	{
+		drainware_stability_breadcrumb( feature );
+
+		if ( g_in_movement_assist_simulation ) {
+			drainware_note_suppressed_sound( "custom_sound_in_assist_simulation", sound_path.c_str( ) );
+			debug_log( "sound", std::string( "blocked reason=in_assist_simulation feature=" ) + feature,
+			           GET_VARIABLE( g_variables.m_debug_log_sound, bool ), 0.25f, feature );
+			return false;
+		}
+
+		if ( g_drainware_custom_movement_sounds_muted ) {
+			drainware_note_suppressed_sound( "custom_sounds_muted", sound_path.c_str( ) );
+			debug_log( "sound", std::string( "blocked reason=custom_sounds_muted feature=" ) + feature,
+			           GET_VARIABLE( g_variables.m_debug_log_sound, bool ), 0.25f, feature );
+			return false;
+		}
+
 		if ( sound_path.empty( ) || !g_interfaces.m_surface ) {
+			drainware_note_suppressed_sound( "empty_or_no_surface", sound_path.c_str( ) );
 			debug_log( "sound", std::string( "blocked empty_or_no_surface feature=" ) + feature, GET_VARIABLE( g_variables.m_debug_log_sound, bool ), 0.4f,
 			           feature );
 			return false;
@@ -181,15 +198,24 @@ namespace
 		std::string lowered = sound_path;
 		std::transform( lowered.begin( ), lowered.end( ), lowered.begin( ), []( unsigned char c ) { return static_cast< char >( std::tolower( c ) ); } );
 		if ( lowered.find( "player\\land" ) != std::string::npos || lowered.find( "player/land" ) != std::string::npos ) {
+			drainware_note_suppressed_sound( "blocked_default_land_sound", sound_path.c_str( ) );
 			debug_log( "sound", std::string( "blocked default land sound path=" ) + sound_path + " feature=" + feature,
 			           GET_VARIABLE( g_variables.m_debug_log_sound, bool ), 0.3f, "blocked_land" );
 			return false;
 		}
 
 		static std::unordered_map< std::string, float > last_sound_time;
+		static float last_global_movement_sound = 0.f;
 		const float now = current_real_time( );
+		if ( now - last_global_movement_sound < 0.06f ) {
+			drainware_note_suppressed_sound( "global_sound_rate_limit", sound_path.c_str( ) );
+			debug_log( "sound", std::string( "blocked global_rate_limit sound=" ) + sound_path + " feature=" + feature,
+			           GET_VARIABLE( g_variables.m_debug_log_sound, bool ), 0.15f, "global_rate_limit" );
+			return false;
+		}
 		const auto it = last_sound_time.find( lowered );
 		if ( it != last_sound_time.end( ) && now - it->second < cooldown ) {
+			drainware_note_suppressed_sound( "per_sound_cooldown", sound_path.c_str( ) );
 			std::ostringstream message;
 			message << "blocked duplicate sound=" << sound_path << " feature=" << feature << " cooldown=" << std::fixed << std::setprecision( 2 )
 			        << cooldown << " remaining=" << std::max( 0.f, cooldown - ( now - it->second ) );
@@ -198,6 +224,7 @@ namespace
 		}
 
 		last_sound_time[ lowered ] = now;
+		last_global_movement_sound = now;
 		g_interfaces.m_surface->play_sound( sound_path.c_str( ) );
 		debug_log( "sound", std::string( "played sound=" ) + sound_path + " feature=" + feature, GET_VARIABLE( g_variables.m_debug_log_sound, bool ),
 		           0.15f, lowered.c_str( ) );
@@ -304,35 +331,10 @@ namespace
 		bool ok = false;
 		bool from_cache = false;
 		int index = 0xffff;
-		int table_count_before = -1;
-		int table_count_after = -1;
-		int add_index = 0xffff;
-		int manager_index = 0xffff;
-		bool found_before = false;
-		bool add_attempted = false;
-		bool manager_attempted = false;
 		std::string reason;
 	};
 
 	std::string current_map_name( );
-
-	std::unordered_map< std::string, csgo_particle_precache_t >& particle_precache_cache( )
-	{
-		static std::unordered_map< std::string, csgo_particle_precache_t > cache;
-		return cache;
-	}
-
-	std::unordered_set< std::string >& particle_once_log_keys( )
-	{
-		static std::unordered_set< std::string > keys;
-		return keys;
-	}
-
-	int& particle_validation_version( )
-	{
-		static int version = 0;
-		return version;
-	}
 
 	c_network_string_table* particle_effect_names_table( )
 	{
@@ -361,14 +363,13 @@ namespace
 
 	csgo_particle_precache_t precache_csgo_particle( const char* particle_name )
 	{
+		static std::unordered_map< std::string, csgo_particle_precache_t > cache;
+
 		if ( !valid_particle_system_name( particle_name ) ) {
-			csgo_particle_precache_t invalid_result{ };
-			invalid_result.reason = "invalid_particle_system_name";
-			return invalid_result;
+			return csgo_particle_precache_t{ false, false, 0xffff, "invalid_particle_system_name" };
 		}
 
 		const std::string cache_key = particle_name;
-		auto& cache = particle_precache_cache( );
 		const auto cached = cache.find( cache_key );
 		if ( cached != cache.end( ) ) {
 			auto result = cached->second;
@@ -387,17 +388,13 @@ namespace
 			debug_log( "particles][precache", std::string( "selected=" ) + particle_name +
 			                                      " table=ParticleEffectNames failed=no_string_table_container map=" + map_name,
 			           GET_VARIABLE( g_variables.m_debug_log_particles, bool ), 0.5f, particle_name );
-			csgo_particle_precache_t result{ };
-			result.reason = "no_string_table_container";
-			return finish( result );
+			return finish( { false, false, 0xffff, "no_string_table_container" } );
 		}
 		if ( !table ) {
 			debug_log( "particles][precache", std::string( "selected=" ) + particle_name +
 			                                      " table=ParticleEffectNames failed=particle_effect_names_table_missing map=" + map_name,
 			           GET_VARIABLE( g_variables.m_debug_log_particles, bool ), 0.5f, particle_name );
-			csgo_particle_precache_t result{ };
-			result.reason = "particle_effect_names_table_missing";
-			return finish( result );
+			return finish( { false, false, 0xffff, "particle_effect_names_table_missing" } );
 		}
 
 		const int table_count_before = table->get_num_strings( );
@@ -427,29 +424,9 @@ namespace
 			           GET_VARIABLE( g_variables.m_debug_log_particles, bool ), 0.5f, particle_name );
 
 			if ( invalid_string_table_index( index_without_manager ) )
-			{
-				csgo_particle_precache_t result{ };
-				result.table_count_before = table_count_before;
-				result.table_count_after = table_count_after_missing_manager;
-				result.add_index = manual_add_index;
-				result.found_before = found_before;
-				result.add_attempted = !found_before;
-				result.reason = "particle_mgr_missing";
-				return finish( result );
-			}
+				return finish( { false, false, 0xffff, "particle_mgr_missing" } );
 
-			csgo_particle_precache_t result{ };
-			result.ok = true;
-			result.index = index_without_manager;
-			result.table_count_before = table_count_before;
-			result.table_count_after = table_count_after_missing_manager;
-			result.add_index = manual_add_index;
-			result.manager_index = 0xffff;
-			result.found_before = found_before;
-			result.add_attempted = !found_before;
-			result.manager_attempted = false;
-			result.reason = "ok_string_table_only";
-			return finish( result );
+			return finish( { true, false, index_without_manager, "ok_string_table_only" } );
 		}
 
 		const int manager_index = particle_mgr( particle_name, nullptr );
@@ -482,158 +459,10 @@ namespace
 		               ( result_ok ? "" : " manifest_hint=particle_may_require_pcf_or_map_event" ),
 		           GET_VARIABLE( g_variables.m_debug_log_particles, bool ), result_ok ? 0.25f : 0.5f, particle_name );
 
-		csgo_particle_precache_t result{ };
-		result.ok = result_ok;
-		result.index = result_ok ? index_after : 0xffff;
-		result.table_count_before = table_count_before;
-		result.table_count_after = table_count_after;
-		result.add_index = manual_add_index;
-		result.manager_index = manager_index;
-		result.found_before = found_before;
-		result.add_attempted = !found_before;
-		result.manager_attempted = true;
-		result.reason = result_ok ? "ok" : failure_stage;
+		if ( !result_ok )
+			return finish( { false, false, 0xffff, failure_stage } );
 
-		return finish( result );
-	}
-
-	bool log_particle_once( const char* feature, const std::string& particle_name, const std::string& message )
-	{
-		const std::string key = std::string( feature ? feature : "particles" ) + ':' + particle_name + ':' + message;
-		auto& keys = particle_once_log_keys( );
-		if ( keys.find( key ) != keys.end( ) )
-			return false;
-
-		keys.insert( key );
-		debug_log( feature, message, GET_VARIABLE( g_variables.m_debug_log_particles, bool ), 0.f, nullptr );
-		return true;
-	}
-
-	bool particle_name_available( const char* particle_name, std::string* reason = nullptr )
-	{
-		if ( const auto option = find_particle_option_by_name( particle_name ) ) {
-			if ( option->local_effect ) {
-				if ( reason )
-					*reason = "local_helper";
-				return true;
-			}
-		}
-
-		const auto precache = precache_csgo_particle( particle_name );
-		if ( reason )
-			*reason = precache.reason;
-		return precache.ok;
-	}
-
-	int first_available_particle_mode( )
-	{
-		const int fallback_preference[] = { 2, 18, 11, 13, 16 };
-		for ( const int mode : fallback_preference ) {
-			if ( mode >= 0 && mode < static_cast< int >( k_particle_options.size( ) ) ) {
-				std::string reason;
-				if ( particle_name_available( particle_option( mode ).name, &reason ) )
-					return mode;
-			}
-		}
-
-		return 13;
-	}
-
-	int configured_fallback_particle_mode( )
-	{
-		int mode = std::clamp( GET_VARIABLE( g_variables.m_particle_fallback_mode, int ), 0, static_cast< int >( k_particle_options.size( ) ) - 1 );
-		if ( mode <= 0 || !particle_name_available( particle_option( mode ).name ) )
-			mode = first_available_particle_mode( );
-
-		GET_VARIABLE( g_variables.m_particle_fallback_mode, int ) = mode;
-		return mode;
-	}
-
-	bool should_show_missing_particles( )
-	{
-		return GET_VARIABLE( g_variables.m_particles_show_experimental, bool ) || !GET_VARIABLE( g_variables.m_particles_working_only, bool );
-	}
-
-	std::string particle_missing_label( const particle_option_t& option, const std::string& reason )
-	{
-		if ( reason == "add_string_failed" )
-			return std::string( option.label ) + " [add failed]";
-		if ( reason == "particle_mgr_precache_failed" )
-			return std::string( option.label ) + " [map/event only?]";
-		if ( reason == "particle_mgr_missing" )
-			return std::string( option.label ) + " [mgr missing]";
-		return std::string( option.label ) + " [missing]";
-	}
-
-	const std::vector< n_misc::particle_menu_item_t >& particle_menu_entries( const bool tracer )
-	{
-		struct menu_cache_t {
-			std::string map;
-			int version = -1;
-			bool show_missing = false;
-			bool working_only = true;
-			bool tracer = false;
-			std::vector< n_misc::particle_menu_item_t > items;
-		};
-
-		static menu_cache_t particle_cache;
-		static menu_cache_t tracer_cache;
-		auto& cache = tracer ? tracer_cache : particle_cache;
-
-		const std::string map_name = current_map_name( );
-		const bool show_missing = should_show_missing_particles( );
-		const bool working_only = GET_VARIABLE( g_variables.m_particles_working_only, bool );
-		if ( cache.version == particle_validation_version( ) && cache.map == map_name && cache.show_missing == show_missing &&
-		     cache.working_only == working_only && cache.tracer == tracer ) {
-			return cache.items;
-		}
-
-		cache.map = map_name;
-		cache.version = particle_validation_version( );
-		cache.show_missing = show_missing;
-		cache.working_only = working_only;
-		cache.tracer = tracer;
-		cache.items.clear( );
-
-		if ( tracer ) {
-			for ( int i = 0; i < static_cast< int >( k_tracer_particle_names.size( ) ); ++i ) {
-				const char* name = tracer_particle_name( i );
-				const auto option = find_particle_option_by_name( name );
-				std::string reason;
-				const bool available = option && option->local_effect ? true : particle_name_available( name, &reason );
-				if ( !available && !show_missing )
-					continue;
-
-				std::string label = option ? option->label : name;
-				if ( i == 3 || i == 4 || i == 6 || i == 7 )
-					label += " (point)";
-				if ( !available )
-					label += " [" + ( reason.empty( ) ? std::string( "missing" ) : reason ) + "]";
-
-				cache.items.push_back( { i, label, name, available, option && option->local_effect, available ? "ok" : reason } );
-			}
-		} else {
-			for ( int i = 0; i < static_cast< int >( k_particle_options.size( ) ); ++i ) {
-				const auto& option = particle_option( i );
-				if ( i == 0 || i == 1 ) {
-					cache.items.push_back( { i, option.label, option.name, true, option.local_effect, "ok" } );
-					continue;
-				}
-
-				std::string reason;
-				const bool available = option.local_effect || particle_name_available( option.name, &reason );
-				if ( !available && !show_missing )
-					continue;
-
-				cache.items.push_back( { i, available ? option.label : particle_missing_label( option, reason ), option.name, available,
-				                         option.local_effect, available ? "ok" : reason } );
-			}
-		}
-
-		if ( cache.items.empty( ) )
-			cache.items.push_back( { 0, "off", "", true, false, "ok" } );
-
-		return cache.items;
+		return finish( { true, false, index_after, "ok" } );
 	}
 
 	using dispatch_particle_origin_fn = void( __fastcall* )( const char*, void*, float, float, float, float, float, float );
@@ -657,15 +486,17 @@ namespace
 	{
 		const auto precache = precache_csgo_particle( particle_name );
 		if ( !precache.ok ) {
-			log_particle_once( feature, particle_name ? particle_name : "<null>",
-			                   std::string( "selected=" ) + ( particle_name ? particle_name : "<null>" ) +
-			                       " unavailable reason=" + precache.reason + " cached=" + ( precache.from_cache ? "true" : "false" ) +
-			                       " origin=" + vector_string( origin ) );
+			g_drainware_particle_health = std::string( "missing: " ) + ( particle_name ? particle_name : "<null>" ) +
+			                              " (" + precache.reason + ")";
+			debug_log( feature, std::string( "selected=" ) + ( particle_name ? particle_name : "<null>" ) + " failed=precache_failed reason=" +
+			                       precache.reason + " origin=" + vector_string( origin ),
+			           GET_VARIABLE( g_variables.m_debug_log_particles, bool ), 0.25f, particle_name ? particle_name : "invalid_particle" );
 			return false;
 		}
 
 		const auto fn = dispatch_particle_origin( );
 		if ( !fn ) {
+			g_drainware_particle_health = std::string( "dispatch failed: " ) + particle_name;
 			debug_log( feature, std::string( "selected=" ) + particle_name + " precache=ok index=" + std::to_string( precache.index ) +
 			                       " failed=dispatch_failed reason=no_dispatch_interface origin=" + vector_string( origin ),
 			           GET_VARIABLE( g_variables.m_debug_log_particles, bool ), 0.25f, particle_name );
@@ -673,6 +504,7 @@ namespace
 		}
 
 		fn( particle_name, nullptr, origin.m_x, origin.m_y, origin.m_z, angles.m_x, angles.m_y, angles.m_z );
+		g_drainware_particle_health = std::string( "OK: " ) + particle_name;
 		debug_log( feature, std::string( "selected=" ) + particle_name + " precache=ok" + ( precache.from_cache ? " cache=hit" : "" ) +
 		                       " index=" + std::to_string( precache.index ) + " dispatch=ok origin=" + vector_string( origin ),
 		           GET_VARIABLE( g_variables.m_debug_log_particles, bool ), 0.08f, particle_name );
@@ -683,15 +515,17 @@ namespace
 	{
 		const auto precache = precache_csgo_particle( particle_name );
 		if ( !precache.ok ) {
-			log_particle_once( feature, particle_name ? particle_name : "<null>",
-			                   std::string( "selected=" ) + ( particle_name ? particle_name : "<null>" ) +
-			                       " unavailable reason=" + precache.reason + " cached=" + ( precache.from_cache ? "true" : "false" ) +
-			                       " start=" + vector_string( start ) + " end=" + vector_string( end ) );
+			g_drainware_particle_health = std::string( "missing tracer: " ) + ( particle_name ? particle_name : "<null>" ) +
+			                              " (" + precache.reason + ")";
+			debug_log( feature, std::string( "selected=" ) + ( particle_name ? particle_name : "<null>" ) + " failed=precache_failed reason=" +
+			                       precache.reason + " start=" + vector_string( start ) + " end=" + vector_string( end ),
+			           GET_VARIABLE( g_variables.m_debug_log_particles, bool ), 0.25f, particle_name ? particle_name : "invalid_particle" );
 			return false;
 		}
 
 		const auto fn = dispatch_particle_tracer( );
 		if ( !fn ) {
+			g_drainware_particle_health = std::string( "tracer dispatch failed: " ) + particle_name;
 			debug_log( feature, std::string( "selected=" ) + particle_name + " precache=ok index=" + std::to_string( precache.index ) +
 			                       " failed=dispatch_failed reason=no_tracer_dispatch_interface start=" + vector_string( start ) +
 			                       " end=" + vector_string( end ),
@@ -700,6 +534,7 @@ namespace
 		}
 
 		fn( precache.index, &start, &end, 0, nullptr, 0 );
+		g_drainware_particle_health = std::string( "OK tracer: " ) + particle_name;
 		debug_log( feature, std::string( "selected=" ) + particle_name + " precache=ok" + ( precache.from_cache ? " cache=hit" : "" ) +
 		                       " index=" + std::to_string( precache.index ) + " dispatch=ok start=" + vector_string( start ) +
 		                       " end=" + vector_string( end ),
@@ -766,9 +601,6 @@ namespace
 		return true;
 	}
 
-	bool emit_particle_by_name( const char* feature, const char* particle_name, const c_vector& origin, float intensity,
-	                            const c_vector* end, c_color color, float lifetime );
-
 	bool emit_selected_particle( const char* feature, const c_vector& origin, int mode, float intensity, const c_vector* end = nullptr,
 	                             c_color color = c_color( 174, 255, 0, 220 ), float lifetime = 0.22f )
 	{
@@ -790,7 +622,10 @@ namespace
 		if ( option.local_effect )
 			return emit_engine_particle( feature, option, origin, end, color, lifetime, intensity );
 
-		return emit_particle_by_name( feature, option.name, origin, intensity, end, color, lifetime );
+		if ( end )
+			return dispatch_csgo_particle_tracer( feature, option.name, origin, *end );
+
+		return dispatch_csgo_particle( feature, option.name, origin, c_angle( 0.f, 0.f, 0.f ) );
 	}
 
 	bool emit_particle_by_name( const char* feature, const char* particle_name, const c_vector& origin, float intensity,
@@ -805,28 +640,6 @@ namespace
 		if ( const auto option = find_particle_option_by_name( particle_name ) ) {
 			if ( option->local_effect )
 				return emit_engine_particle( feature, *option, origin, end, color, lifetime, intensity );
-		}
-
-		std::string reason;
-		if ( !particle_name_available( particle_name, &reason ) ) {
-			if ( GET_VARIABLE( g_variables.m_particle_fallback_enabled, bool ) ) {
-				const int fallback_mode = configured_fallback_particle_mode( );
-				const auto& fallback = particle_option( fallback_mode );
-				if ( fallback.name[ 0 ] && std::strcmp( fallback.name, particle_name ) != 0 && particle_name_available( fallback.name ) ) {
-					log_particle_once( feature, particle_name,
-					                   std::string( "selected=" ) + particle_name + " unavailable reason=" + reason +
-					                       " fallback=" + fallback.name );
-					if ( fallback.local_effect )
-						return emit_engine_particle( feature, fallback, origin, end, color, lifetime, intensity );
-					if ( end )
-						return dispatch_csgo_particle_tracer( feature, fallback.name, origin, *end );
-					return dispatch_csgo_particle( feature, fallback.name, origin, c_angle( 0.f, 0.f, 0.f ) );
-				}
-			}
-
-			log_particle_once( feature, particle_name, std::string( "selected=" ) + particle_name + " unavailable reason=" + reason +
-			                                           " fallback=disabled_or_unavailable" );
-			return false;
 		}
 
 		if ( end )
@@ -904,8 +717,306 @@ void n_misc::impl_t::request_ambient_light_restore( )
 	g_ambient_restore_requested = true;
 }
 
+void n_misc::impl_t::request_panic_restore( )
+{
+	g_drainware_panic_restore_requested = true;
+}
+
+void n_misc::impl_t::panic_restore( )
+{
+	drainware_stability_breadcrumb( "panic_restore" );
+	g_drainware_custom_movement_sounds_muted = true;
+	g_drainware_sound_spam_detected = false;
+	g_drainware_suppressed_sound_count = 0;
+	g_drainware_last_suppressed_sound = "panic reset";
+
+	GET_VARIABLE( g_variables.edge_bug, bool ) = false;
+	GET_VARIABLE( g_variables.m_pixel_surf, bool ) = false;
+	GET_VARIABLE( g_variables.m_pixel_surf_assist, bool ) = false;
+	GET_VARIABLE( g_variables.m_bouncee_assist, bool ) = false;
+	GET_VARIABLE( g_variables.m_jump_bug, bool ) = false;
+	GET_VARIABLE( g_variables.m_air_stuck, bool ) = false;
+	GET_VARIABLE( g_variables.m_blockbot, bool ) = false;
+	GET_VARIABLE( g_variables.m_deagle_spinner, bool ) = false;
+	GET_VARIABLE( g_variables.m_footstep_fx_enabled, bool ) = false;
+	GET_VARIABLE( g_variables.m_edgebug_particles, bool ) = false;
+	GET_VARIABLE( g_variables.m_bullet_tracer, bool ) = false;
+	GET_VARIABLE( g_variables.m_jump_feedback_sound, bool ) = false;
+	GET_VARIABLE( g_variables.m_old_edit_vibes_sound, bool ) = false;
+	GET_VARIABLE( g_variables.m_world_modulation, bool ) = false;
+	GET_VARIABLE( g_variables.m_bloom, bool ) = false;
+	GET_VARIABLE( g_variables.m_engine_ambient_light, bool ) = false;
+	GET_VARIABLE( g_variables.m_dof, bool ) = false;
+	GET_VARIABLE( g_variables.m_px_database_auto_record, bool ) = false;
+	g_ambient_restore_requested = true;
+	g_ctx.force_full_update = true;
+
+	g_drainware_particle_health = "cooldowns reset";
+	g_drainware_world_health = "restore requested";
+	g_drainware_last_error_line = "panic restore executed";
+	movement_assist_debug_log( "stability", "panic_restore disabled risky movement/sound/visual systems restore_requested=1", 0.f, nullptr );
+}
+
+n_misc::impl_t::health_snapshot_t n_misc::impl_t::get_health_snapshot( )
+{
+	health_snapshot_t snapshot{ };
+	snapshot.particles = g_drainware_particle_health.empty( ) ? "unknown" : g_drainware_particle_health;
+	snapshot.sound_guard = g_drainware_sound_spam_detected ? "spam detected" : g_drainware_custom_movement_sounds_muted ? "muted" : "OK";
+	snapshot.prediction_guard = g_in_movement_assist_simulation ? std::string( "active: " ) + g_movement_assist_simulation_reason : "inactive";
+	snapshot.world_modulation = GET_VARIABLE( g_variables.m_world_modulation, bool ) ? "applied/enabled" : "restored/off";
+	snapshot.inventory = g_drainware_inventory_health.empty( ) ? "OK" : g_drainware_inventory_health;
+	snapshot.config = g_drainware_config_health.empty( ) ? "unknown" : g_drainware_config_health;
+	snapshot.last_error = g_drainware_last_error_line.empty( ) ? "none" : g_drainware_last_error_line;
+	snapshot.last_action = g_drainware_last_stability_action.empty( ) ? "none" : g_drainware_last_stability_action;
+	snapshot.last_suppressed_sound = g_drainware_last_suppressed_sound.empty( ) ? "none" : g_drainware_last_suppressed_sound;
+	snapshot.suppressed_sounds = g_drainware_suppressed_sound_count;
+	snapshot.custom_sounds_muted = g_drainware_custom_movement_sounds_muted;
+	return snapshot;
+}
+
+std::string n_misc::impl_t::debug_summary( )
+{
+	const auto health = get_health_snapshot( );
+	std::ostringstream out;
+	out << "particles: " << health.particles << '\n'
+	    << "sound guard: " << health.sound_guard << '\n'
+	    << "prediction guard: " << health.prediction_guard << '\n'
+	    << "world modulation: " << health.world_modulation << '\n'
+	    << "inventory: " << health.inventory << '\n'
+	    << "config: " << health.config << '\n'
+	    << "suppressed sounds: " << health.suppressed_sounds << '\n'
+	    << "last suppressed sound: " << health.last_suppressed_sound << '\n'
+	    << "last action: " << health.last_action << '\n'
+	    << "last error: " << health.last_error;
+	return out.str( );
+}
+
+bool n_misc::impl_t::save_stable_snapshot( )
+{
+	drainware_stability_breadcrumb( "config_save_stable_snapshot" );
+	const bool ok = g_config.save( "stable_snapshot" );
+	g_drainware_config_health = ok ? "stable snapshot saved" : "stable snapshot save failed";
+	if ( !ok )
+		drainware_stability_error( "config", "stable snapshot save failed" );
+	return ok;
+}
+
+bool n_misc::impl_t::restore_stable_snapshot( )
+{
+	drainware_stability_breadcrumb( "config_restore_stable_snapshot" );
+	const bool ok = g_config.load( std::string( "stable_snapshot" ) + n_branding::k_config_extension );
+	g_drainware_config_health = ok ? "stable snapshot restored" : "stable snapshot restore failed";
+	if ( !ok )
+		drainware_stability_error( "config", "stable snapshot restore failed" );
+	return ok;
+}
+
+void n_misc::impl_t::restore_defaults( )
+{
+	drainware_stability_breadcrumb( "restore_safe_defaults" );
+	GET_VARIABLE( g_variables.m_debug_logging, bool ) = false;
+	GET_VARIABLE( g_variables.m_footstep_fx_enabled, bool ) = false;
+	GET_VARIABLE( g_variables.m_edgebug_particles, bool ) = false;
+	GET_VARIABLE( g_variables.m_bullet_tracer, bool ) = false;
+	GET_VARIABLE( g_variables.m_bloom, bool ) = false;
+	GET_VARIABLE( g_variables.m_engine_ambient_light, bool ) = false;
+	GET_VARIABLE( g_variables.m_dof, bool ) = false;
+	GET_VARIABLE( g_variables.m_world_modulation, bool ) = false;
+	GET_VARIABLE( g_variables.m_run_analyzer, bool ) = false;
+	GET_VARIABLE( g_variables.m_old_edit_vibes_sound, bool ) = false;
+	GET_VARIABLE( g_variables.m_jump_feedback_sound, bool ) = false;
+	GET_VARIABLE( g_variables.m_px_database_auto_record, bool ) = true;
+	GET_VARIABLE( g_variables.m_accent, c_color ) = c_color( 174, 255, 0, 255 );
+	g_ambient_restore_requested = true;
+	g_drainware_config_health = "safe defaults restored";
+}
+
+std::vector< std::string > n_misc::impl_t::bind_conflicts( const bool only_active )
+{
+	struct bind_entry_t {
+		const char* name;
+		key_bind_t bind;
+		bool active;
+		bool important;
+	};
+
+	const std::array< bind_entry_t, 17 > binds{ {
+		{ "edge jump", GET_VARIABLE( g_variables.m_edge_jump_key, key_bind_t ), GET_VARIABLE( g_variables.m_edge_jump, bool ), false },
+		{ "long jump", GET_VARIABLE( g_variables.m_long_jump_key, key_bind_t ), GET_VARIABLE( g_variables.m_long_jump, bool ), false },
+		{ "mini jump", GET_VARIABLE( g_variables.m_mini_jump_key, key_bind_t ), GET_VARIABLE( g_variables.m_mini_jump, bool ), false },
+		{ "jumpbug", GET_VARIABLE( g_variables.m_jump_bug_key, key_bind_t ), GET_VARIABLE( g_variables.m_jump_bug, bool ), true },
+		{ "edgebug", GET_VARIABLE( g_variables.edge_bug_key, key_bind_t ), GET_VARIABLE( g_variables.edge_bug, bool ), true },
+		{ "pixelsurf", GET_VARIABLE( g_variables.m_pixel_surf_key, key_bind_t ), GET_VARIABLE( g_variables.m_pixel_surf, bool ), true },
+		{ "pixelsurf assist", GET_VARIABLE( g_variables.m_pixel_surf_assist_key, key_bind_t ),
+		  GET_VARIABLE( g_variables.m_pixel_surf_assist, bool ), true },
+		{ "pixelsurf point", GET_VARIABLE( g_variables.m_pixel_surf_assist_point_key, key_bind_t ),
+		  GET_VARIABLE( g_variables.m_pixel_surf_assist, bool ), false },
+		{ "bounce assist", GET_VARIABLE( g_variables.m_bounce_assist_key, key_bind_t ), GET_VARIABLE( g_variables.m_bouncee_assist, bool ), true },
+		{ "bounce point", GET_VARIABLE( g_variables.m_bounce_assist_point_key, key_bind_t ), GET_VARIABLE( g_variables.m_bouncee_assist, bool ), false },
+		{ "fire man", GET_VARIABLE( g_variables.m_fire_man_key, key_bind_t ), GET_VARIABLE( g_variables.m_fire_man, bool ), false },
+		{ "ladder bug", GET_VARIABLE( g_variables.m_ladder_bug_key, key_bind_t ), GET_VARIABLE( g_variables.m_ladder_bug, bool ), false },
+		{ "airstuck", GET_VARIABLE( g_variables.m_air_stuck_key, key_bind_t ), GET_VARIABLE( g_variables.m_air_stuck, bool ), true },
+		{ "deagle spinner", GET_VARIABLE( g_variables.m_deagle_spinner_key, key_bind_t ), GET_VARIABLE( g_variables.m_deagle_spinner, bool ), false },
+		{ "blockbot", GET_VARIABLE( g_variables.m_blockbot_key, key_bind_t ), GET_VARIABLE( g_variables.m_blockbot, bool ), false },
+		{ "practice cp", GET_VARIABLE( g_variables.m_practice_cp_key, key_bind_t ), GET_VARIABLE( g_variables.m_practice_window, bool ), false },
+		{ "panic", GET_VARIABLE( g_variables.m_panic_key, key_bind_t ), true, true },
+	} };
+
+	std::unordered_map< int, std::vector< const bind_entry_t* > > by_key;
+	std::vector< std::string > out;
+	for ( const auto& bind : binds ) {
+		if ( only_active && !bind.active )
+			continue;
+		if ( bind.bind.m_key <= 0 ) {
+			if ( bind.important && bind.active )
+				out.emplace_back( std::string( "unset: " ) + bind.name );
+			continue;
+		}
+		by_key[ bind.bind.m_key ].push_back( &bind );
+	}
+
+	for ( const auto& [ key, entries ] : by_key ) {
+		if ( entries.size( ) < 2U )
+			continue;
+
+		std::string line = key >= 0 && key < IM_ARRAYSIZE( FILTERED_KEY_NAMES ) ? FILTERED_KEY_NAMES[ key ] : std::to_string( key );
+		line += ": ";
+		for ( std::size_t i = 0; i < entries.size( ); ++i ) {
+			if ( i )
+				line += ", ";
+			line += entries[ i ]->name;
+			line += entries[ i ]->bind.m_key_style == 2 ? " (toggle)" : entries[ i ]->bind.m_key_style == 1 ? " (hold)" : " (always)";
+		}
+		out.push_back( line );
+	}
+
+	if ( out.empty( ) )
+		out.emplace_back( "no conflicts" );
+	return out;
+}
+
+n_misc::impl_t::session_hub_snapshot_t n_misc::impl_t::get_session_hub_snapshot( )
+{
+	auto snapshot = m_session_hub_snapshot;
+	const auto health = get_health_snapshot( );
+	snapshot.particle_mode = GET_VARIABLE( g_variables.m_debug_logging, bool ) ? "debug/experimental visible" : "working/default";
+	snapshot.last_particle_error = health.particles;
+	snapshot.current_map_profile = current_map_name( ).empty( ) ? "none" : current_map_name( );
+	if ( const auto table = particle_effect_names_table( ) )
+		snapshot.particle_table_count = table->get_num_strings( );
+	return snapshot;
+}
+
+bool n_misc::impl_t::save_current_map_profile( )
+{
+	drainware_stability_breadcrumb( "map_profile_save" );
+	const std::string map = current_map_name( );
+	if ( map.empty( ) ) {
+		drainware_stability_error( "map_profile", "save failed reason=no_current_map" );
+		return false;
+	}
+
+	std::filesystem::create_directories( n_branding::k_config_directory );
+	const std::filesystem::path path = std::filesystem::path( n_branding::k_config_directory ) / ( "map_profile_" + map + ".txt" );
+	std::ofstream file( path, std::ios::trunc );
+	if ( !file.good( ) ) {
+		drainware_stability_error( "map_profile", "save failed reason=open_failed map=" + map );
+		return false;
+	}
+
+	file << "version 1\n"
+	     << "px_database " << GET_VARIABLE( g_variables.m_px_database, bool ) << '\n'
+	     << "px_auto_record " << GET_VARIABLE( g_variables.m_px_database_auto_record, bool ) << '\n'
+	     << "px_distance " << GET_VARIABLE( g_variables.m_px_database_distance, float ) << '\n'
+	     << "px_thickness " << GET_VARIABLE( g_variables.m_px_database_thickness, float ) << '\n'
+	     << "pixelsurf_assist_radius " << GET_VARIABLE( g_variables.m_pixel_surf_assist_radius, float ) << '\n'
+	     << "world_modulation " << GET_VARIABLE( g_variables.m_world_modulation, bool ) << '\n'
+	     << "debug_logging " << GET_VARIABLE( g_variables.m_debug_logging, bool ) << '\n'
+	     << "particle_favorites " << GET_VARIABLE( g_variables.m_particle_favorites, std::string ) << '\n';
+
+	g_drainware_config_health = "map profile saved: " + map;
+	movement_assist_debug_log( "map_profile", "saved map=" + map + " path=" + path.string( ), 0.f, nullptr );
+	return true;
+}
+
+bool n_misc::impl_t::reload_current_map_profile( )
+{
+	drainware_stability_breadcrumb( "map_profile_load" );
+	const std::string map = current_map_name( );
+	if ( map.empty( ) ) {
+		drainware_stability_error( "map_profile", "load failed reason=no_current_map" );
+		return false;
+	}
+
+	const std::filesystem::path path = std::filesystem::path( n_branding::k_config_directory ) / ( "map_profile_" + map + ".txt" );
+	std::ifstream file( path );
+	if ( !file.good( ) ) {
+		drainware_stability_error( "map_profile", "load failed reason=open_failed map=" + map );
+		return false;
+	}
+
+	std::string key;
+	while ( file >> key ) {
+		if ( key == "version" ) {
+			int ignored = 0;
+			file >> ignored;
+		} else if ( key == "px_database" ) {
+			file >> GET_VARIABLE( g_variables.m_px_database, bool );
+		} else if ( key == "px_auto_record" ) {
+			file >> GET_VARIABLE( g_variables.m_px_database_auto_record, bool );
+		} else if ( key == "px_distance" ) {
+			file >> GET_VARIABLE( g_variables.m_px_database_distance, float );
+		} else if ( key == "px_thickness" ) {
+			file >> GET_VARIABLE( g_variables.m_px_database_thickness, float );
+		} else if ( key == "pixelsurf_assist_radius" ) {
+			file >> GET_VARIABLE( g_variables.m_pixel_surf_assist_radius, float );
+		} else if ( key == "world_modulation" ) {
+			file >> GET_VARIABLE( g_variables.m_world_modulation, bool );
+		} else if ( key == "debug_logging" ) {
+			file >> GET_VARIABLE( g_variables.m_debug_logging, bool );
+		} else if ( key == "particle_favorites" ) {
+			std::string rest;
+			std::getline( file, rest );
+			if ( !rest.empty( ) && rest.front( ) == ' ' )
+				rest.erase( rest.begin( ) );
+			GET_VARIABLE( g_variables.m_particle_favorites, std::string ) = rest;
+		}
+	}
+
+	g_drainware_config_health = "map profile loaded: " + map;
+	movement_assist_debug_log( "map_profile", "loaded map=" + map + " path=" + path.string( ), 0.f, nullptr );
+	return true;
+}
+
+void n_misc::impl_t::dump_particle_table( )
+{
+	drainware_stability_breadcrumb( "particle_table_dump" );
+	const auto table = particle_effect_names_table( );
+	if ( !table ) {
+		drainware_stability_error( "particles", "dump failed reason=ParticleEffectNames missing" );
+		return;
+	}
+
+	const int count = table->get_num_strings( );
+	movement_assist_debug_log( "particles", "dump ParticleEffectNames count=" + std::to_string( count ) + " map=" + current_map_name( ), 0.f, nullptr );
+	for ( int i = 0; i < count; ++i ) {
+		const char* value = table->get_string( i );
+		if ( value && value[ 0 ] )
+			movement_assist_debug_log( "particles][table", std::to_string( i ) + "=" + value, 0.f, nullptr );
+	}
+	g_drainware_particle_health = "dumped table count=" + std::to_string( count );
+}
+
 void n_misc::impl_t::on_create_move_pre( )
 {
+	if ( g_input.check_input( &GET_VARIABLE( g_variables.m_panic_key, key_bind_t ) ) )
+		g_drainware_panic_restore_requested = true;
+
+	if ( g_drainware_panic_restore_requested ) {
+		g_drainware_panic_restore_requested = false;
+		this->panic_restore( );
+	}
+
 	this->clantag_changer( );
 
 	this->disable_post_processing( );
@@ -1638,6 +1749,7 @@ void n_misc::impl_t::draw_visual_cosmetics( )
 	const float speed_delta = speed - last_speed;
 	const bool just_left_ground = last_grounded && !grounded;
 	const bool just_landed = !last_grounded && grounded;
+	const bool allow_movement_side_effects = !g_in_movement_assist_simulation;
 	if ( just_left_ground ) {
 		air_start_origin = g_ctx.m_local->get_abs_origin( );
 		air_start_time = now;
@@ -1648,6 +1760,9 @@ void n_misc::impl_t::draw_visual_cosmetics( )
 
 	bool pts_event = false;
 	auto add_score_event = [ & ]( int pts_delta, int aura_delta, float heat_delta ) {
+		if ( !allow_movement_side_effects )
+			return;
+
 		if ( GET_VARIABLE( g_variables.m_pts_meter, bool ) ) {
 			pts_value = std::max( 0, pts_value + pts_delta );
 			pts_event = true;
@@ -1661,6 +1776,9 @@ void n_misc::impl_t::draw_visual_cosmetics( )
 	};
 
 	auto emit_movement_print = [ & ]( const int index, const bool enabled, const char* text ) {
+		if ( !allow_movement_side_effects )
+			return;
+
 		const float cooldown = std::clamp( GET_VARIABLE( g_variables.m_chat_print_cooldown, float ), 0.15f, 4.f );
 		if ( enabled && index >= 0 && index < 4 && now - last_chat_times[ index ] > cooldown ) {
 			movement_print( text );
@@ -1677,10 +1795,11 @@ void n_misc::impl_t::draw_visual_cosmetics( )
 	const bool jb_key_active = GET_VARIABLE( g_variables.m_jump_bug, bool ) && g_input.check_input( &GET_VARIABLE( g_variables.m_jump_bug_key, key_bind_t ) );
 
 	auto start_run = [ & ]( const char* reason ) {
-		if ( !GET_VARIABLE( g_variables.m_run_analyzer, bool ) || run_active )
+		if ( !allow_movement_side_effects || !GET_VARIABLE( g_variables.m_run_analyzer, bool ) || run_active )
 			return;
 
 		run_active = true;
+		m_session_hub_snapshot.run_status = "active";
 		run_max_speed = speed;
 		run_start_time = now;
 		run_last_event_time = now;
@@ -1693,19 +1812,20 @@ void n_misc::impl_t::draw_visual_cosmetics( )
 		           GET_VARIABLE( g_variables.m_debug_log_run, bool ), 0.15f, "run_start" );
 	};
 	auto add_run_event = [ & ]( const char* token, const bool allow_consecutive_duplicate = true ) {
-		if ( !GET_VARIABLE( g_variables.m_run_analyzer, bool ) )
+		if ( !allow_movement_side_effects || !GET_VARIABLE( g_variables.m_run_analyzer, bool ) )
 			return;
 
 		start_run( token );
 		if ( run_combo.empty( ) || allow_consecutive_duplicate || run_combo.back( ) != token )
 			run_combo.emplace_back( token );
+		m_session_hub_snapshot.last_tech = token;
 		run_last_event_time = now;
 		debug_log( "run", std::string( "event=" ) + token + " velocity=" + std::to_string( static_cast< int >( speed ) ) +
 		                       " grounded=" + ( grounded ? "1" : "0" ),
 		           GET_VARIABLE( g_variables.m_debug_log_run, bool ), 0.05f, token );
 	};
 	auto add_run_bind = [ & ]( const char* token ) {
-		if ( !GET_VARIABLE( g_variables.m_run_analyzer, bool ) )
+		if ( !allow_movement_side_effects || !GET_VARIABLE( g_variables.m_run_analyzer, bool ) )
 			return;
 
 		start_run( token );
@@ -1727,7 +1847,7 @@ void n_misc::impl_t::draw_visual_cosmetics( )
 		return out;
 	};
 	auto finish_run = [ & ]( bool failed, const char* reason ) {
-		if ( !run_active )
+		if ( !allow_movement_side_effects || !run_active )
 			return;
 
 		failed = failed || run_failed;
@@ -1735,7 +1855,7 @@ void n_misc::impl_t::draw_visual_cosmetics( )
 			reason = run_fail_reason.c_str( );
 
 		if ( !failed || GET_VARIABLE( g_variables.m_run_analyzer_show_failed, bool ) ) {
-			const std::string combo_text = join_strings( run_combo, " + ", failed ? "failed" : "flow" );
+			const std::string combo_text = join_strings( run_combo, " + ", failed ? "failed" : "none" );
 			const std::string bind_text = join_strings( run_binds, ", ", "none" );
 			std::string run_text = std::string( failed ? "fail" : "success" ) + " | max speed: " +
 			                       std::to_string( static_cast< int >( run_max_speed ) ) + " | combo: " + combo_text;
@@ -1743,6 +1863,21 @@ void n_misc::impl_t::draw_visual_cosmetics( )
 				run_text += std::string( " | reason: " ) + reason;
 			if ( GET_VARIABLE( g_variables.m_run_analyzer_include_raw_binds, bool ) )
 				run_text += " | binds: " + bind_text;
+			m_session_hub_snapshot.run_status = failed ? "fail" : "success";
+			m_session_hub_snapshot.run_max_speed = static_cast< int >( run_max_speed );
+			m_session_hub_snapshot.run_combo = combo_text;
+			m_session_hub_snapshot.last_fail_reason = failed && reason && reason[ 0 ] ? reason : "none";
+			m_session_hub_snapshot.last_run_summary = run_text;
+			m_session_hub_snapshot.coach_feedback = failed && reason && std::string( reason ).find( "JB" ) != std::string::npos ?
+			                                            "JB failed; no timing data" :
+			                                            combo_text.find( "PX" ) != std::string::npos ? "PX used; no timing data" : "no timing data";
+			if ( GET_VARIABLE( g_variables.m_session_movement_coach, bool ) ) {
+				const int coach_output = std::clamp( GET_VARIABLE( g_variables.m_session_movement_coach_output, int ), 0, 2 );
+				if ( coach_output == 1 )
+					movement_print( m_session_hub_snapshot.coach_feedback.c_str( ), false );
+				else if ( coach_output == 2 )
+					debug_log( "coach", m_session_hub_snapshot.coach_feedback, GET_VARIABLE( g_variables.m_debug_log_run, bool ), 0.25f, "coach" );
+			}
 			movement_print( run_text.c_str( ), false );
 
 			debug_log( "run", std::string( "ended reason=" ) + ( reason ? reason : "timeout" ) + " max_vel=" +
@@ -1806,8 +1941,6 @@ void n_misc::impl_t::draw_visual_cosmetics( )
 			add_run_event( "CJ", false );
 		else
 			add_run_event( "J" );
-		if ( GET_VARIABLE( g_variables.m_bunny_hop, bool ) && last_speed > 170.f )
-			add_run_event( "BHop", false );
 	}
 
 	const bool pixelsurf_state = g_movement.m_pixelsurf_data.m_in_pixel_surf || g_movement.m_pixelsurf_data.m_predicted_succesful;
@@ -1824,13 +1957,13 @@ void n_misc::impl_t::draw_visual_cosmetics( )
 		emit_movement_print( 0, GET_VARIABLE( g_variables.m_chat_print_edgebug, bool ), "edgebugged" );
 		last_edgebug_score_time = now;
 	}
-	if ( edgebug_state && !last_edgebug_state && GET_VARIABLE( g_variables.m_edgebug_particles, bool ) &&
+	if ( allow_movement_side_effects && edgebug_state && !last_edgebug_state && GET_VARIABLE( g_variables.m_edgebug_particles, bool ) &&
 	     now - last_edgebug_particle_time > std::clamp( GET_VARIABLE( g_variables.m_edgebug_particle_cooldown, float ), 0.18f, 2.0f ) ) {
 		emit_selected_particle( "particles][edgebug", g_ctx.m_local->get_abs_origin( ),
 		                        std::clamp( GET_VARIABLE( g_variables.m_edgebug_particle_type, int ), 1, static_cast< int >( k_particle_options.size( ) ) - 1 ),
 		                        GET_VARIABLE( g_variables.m_edgebug_particle_intensity, float ), nullptr, accent_cfg, 0.2f );
 		last_edgebug_particle_time = now;
-	} else if ( edgebug_state && !last_edgebug_state && GET_VARIABLE( g_variables.m_edgebug_particles, bool ) ) {
+	} else if ( allow_movement_side_effects && edgebug_state && !last_edgebug_state && GET_VARIABLE( g_variables.m_edgebug_particles, bool ) ) {
 		const float cooldown = std::clamp( GET_VARIABLE( g_variables.m_edgebug_particle_cooldown, float ), 0.18f, 2.0f );
 		std::ostringstream message;
 		message << "skipped=cooldown remaining=" << std::fixed << std::setprecision( 2 )
@@ -1851,7 +1984,7 @@ void n_misc::impl_t::draw_visual_cosmetics( )
 	}
 	last_jumpbug_state = jumpbug_state;
 
-	if ( GET_VARIABLE( g_variables.m_px_database, bool ) ) {
+	if ( allow_movement_side_effects && GET_VARIABLE( g_variables.m_px_database, bool ) ) {
 		if ( GET_VARIABLE( g_variables.m_px_database_auto_record, bool ) ) {
 			const c_vector origin = g_ctx.m_local->get_abs_origin( );
 			if ( pixelsurf_state ) {
@@ -1973,7 +2106,41 @@ void n_misc::impl_t::draw_visual_cosmetics( )
 		run_combo.clear( );
 		run_binds.clear( );
 		run_jumpbug_attempt = false;
+		if ( m_session_hub_snapshot.last_run_summary == "none" )
+			m_session_hub_snapshot.run_status = "idle";
 	}
+
+	auto update_session_hub_snapshot = [ & ]( ) {
+		m_session_hub_snapshot.run_status = run_active ? "active" : m_session_hub_snapshot.run_status.empty( ) ? "idle" : m_session_hub_snapshot.run_status;
+		m_session_hub_snapshot.run_max_speed = static_cast< int >( run_active ? run_max_speed : std::max( run_max_speed, speed ) );
+		m_session_hub_snapshot.run_combo = run_active ? join_strings( run_combo, " + ", "none" ) : m_session_hub_snapshot.run_combo;
+		m_session_hub_snapshot.last_fail_reason = run_fail_reason.empty( ) ? "none" : run_fail_reason;
+
+		const bool px_assist_enabled = GET_VARIABLE( g_variables.m_pixel_surf_assist, bool );
+		const bool px_assist_key =
+			px_assist_enabled && g_input.check_input( &GET_VARIABLE( g_variables.m_pixel_surf_assist_key, key_bind_t ) );
+		m_session_hub_snapshot.pixelsurf_assist_status =
+			!px_assist_enabled ? "off" : pixelsurf_state ? "locked" : px_assist_key ? "searching" : "ready";
+		m_session_hub_snapshot.edgebug_status = !GET_VARIABLE( g_variables.edge_bug, bool ) ? "off" :
+		                                        g_movement.m_edgebug_data.m_will_edgebug ? "predicted" :
+		                                        g_movement.m_edgebug_data.m_will_fail ? "failed" :
+		                                        eb_key_active ? "armed" : "ready";
+		m_session_hub_snapshot.jumpbug_status = !GET_VARIABLE( g_variables.m_jump_bug, bool ) ? "off" :
+		                                        jumpbug_state ? "success" : jb_key_active ? "armed" : "ready";
+		m_session_hub_snapshot.px_database_status = !GET_VARIABLE( g_variables.m_px_database, bool ) ? "disabled" :
+		                                           GET_VARIABLE( g_variables.m_px_database_auto_record, bool ) ? "recording" : "loaded";
+		m_session_hub_snapshot.current_map_profile = map_name.empty( ) ? "none" : map_name;
+		m_session_hub_snapshot.px_lines_current_map = 0;
+		for ( const auto& path : px_paths ) {
+			if ( map_name.empty( ) || path.map == map_name )
+				++m_session_hub_snapshot.px_lines_current_map;
+		}
+		if ( const auto table = particle_effect_names_table( ) )
+			m_session_hub_snapshot.particle_table_count = table->get_num_strings( );
+		m_session_hub_snapshot.particle_mode = GET_VARIABLE( g_variables.m_debug_logging, bool ) ? "debug/experimental visible" : "working/default";
+		m_session_hub_snapshot.last_particle_error = g_drainware_particle_health.empty( ) ? "none" : g_drainware_particle_health;
+	};
+	update_session_hub_snapshot( );
 
 	last_jump_pressed = jump_pressed;
 	last_duck_pressed = duck_pressed;
@@ -2139,7 +2306,7 @@ void n_misc::impl_t::draw_visual_cosmetics( )
 
 	const float footstep_distance = std::clamp( 28.f + speed * 0.02f, 28.f, 48.f );
 	const float footstep_cooldown = std::clamp( GET_VARIABLE( g_variables.m_footstep_fx_cooldown, float ), 0.06f, 0.65f );
-	if ( footstep_enabled && footstep_mode > 0 && grounded && speed > 35.f &&
+	if ( allow_movement_side_effects && footstep_enabled && footstep_mode > 0 && grounded && speed > 35.f &&
 	     ( last_footstep_origin.is_zero( ) || g_ctx.m_local->get_abs_origin( ).dist_to_2d( last_footstep_origin ) > footstep_distance ) &&
 	     now - last_footstep_time > footstep_cooldown ) {
 		last_footstep_origin = g_ctx.m_local->get_abs_origin( );
@@ -2147,7 +2314,7 @@ void n_misc::impl_t::draw_visual_cosmetics( )
 		emit_selected_particle( "particles][footstep", last_footstep_origin, resolved_mode, GET_VARIABLE( g_variables.m_footstep_fx_intensity, float ),
 		                        nullptr, accent_cfg, 0.18f );
 		last_footstep_time = now;
-	} else if ( footstep_enabled && footstep_mode > 0 && grounded && speed > 35.f ) {
+	} else if ( allow_movement_side_effects && footstep_enabled && footstep_mode > 0 && grounded && speed > 35.f ) {
 		const float remaining = footstep_cooldown - ( now - last_footstep_time );
 		if ( remaining > 0.f ) {
 			std::ostringstream message;

@@ -4,6 +4,7 @@
 #include "../dependencies/fnv1a/fnv1a.h"
 #include "../../game/sdk/includes/includes.h"
 #include "../../globals/includes/includes.h"
+#include "../movement/movement_assist_simulation.h"
 #include "../misc/scaleform/scaleform.h"
 #include <filesystem>
 #include <fstream>
@@ -14,6 +15,9 @@ namespace
 {
 	void inventory_debug_log( const std::string& message )
 	{
+		if ( message.find( "failed" ) != std::string::npos )
+			g_drainware_inventory_health = message;
+
 		if ( !GET_VARIABLE( g_variables.m_debug_logging, bool ) )
 			return;
 
@@ -31,6 +35,9 @@ namespace
 
 std::add_pointer_t< c_client_networkable* __cdecl( int32_t, int32_t ) > get_wearable_create_fn( )
 {
+	if ( !g_interfaces.m_base_client )
+		return nullptr;
+
 	for ( c_base_client* pClass = g_interfaces.m_base_client->get_all_classes( ); pClass != nullptr; pClass = pClass->m_next ) {
 		if ( !pClass || !pClass->m_recv_table || fnv1a::hash( pClass->m_network_name ) != fnv1a::hash( "CEconWearable" ) )
 			continue;
@@ -268,6 +275,9 @@ void n_invetory_changer::impl_t::ApplyGlove( IPlayerInventory* LocalInventory, p
 }
 void n_invetory_changer::impl_t::ApplyWeapons( IPlayerInventory* LocalInventory, player_info_t Info )
 {
+	if ( !LocalInventory || !g_ctx.m_local || !g_interfaces.m_client_entity_list )
+		return;
+
 	auto hMyWeapons = g_ctx.m_local->get_weapons_handle( );
 	if ( !hMyWeapons )
 		return;
@@ -275,14 +285,22 @@ void n_invetory_changer::impl_t::ApplyWeapons( IPlayerInventory* LocalInventory,
 	for ( auto iIndex = 0; hMyWeapons[ iIndex ] != 0xFFFFFFFF; iIndex++ ) {
 		c_base_entity* pWeapon =
 			static_cast< c_base_entity* >( g_interfaces.m_client_entity_list->get_client_entity_from_handle( hMyWeapons[ iIndex ] ) );
-		if ( !pWeapon || fnv1a::hash( g_items_manager.items[ pWeapon->m_nItemID( ) ]->m_szType ) == fnv1a::hash( "#CSGO_Type_Knife" ) )
+		if ( !pWeapon )
+			continue;
+
+		const auto weapon_id = pWeapon->m_nItemID( );
+		const auto weapon_definition = g_items_manager.items[ weapon_id ];
+		if ( !weapon_definition || !weapon_definition->m_szType )
+			continue;
+
+		if ( fnv1a::hash( weapon_definition->m_szType ) == fnv1a::hash( "#CSGO_Type_Knife" ) )
 			continue;
 
 		if ( Info.m_xuid_high != pWeapon->get_owner_xuid_high( ) || Info.m_xuid_low != pWeapon->get_owner_xuid_low( ) )
 			continue;
 
 		C_EconItemView* pEconItemView = LocalInventory->GetItemInLoadout( static_cast< int32_t >( g_ctx.m_local->get_team( ) ),
-		                                                                  g_items_manager.items[ pWeapon->m_nItemID( ) ]->m_nLoadoutSlot );
+		                                                                  weapon_definition->m_nLoadoutSlot );
 		if ( !pEconItemView )
 			continue;
 
@@ -304,6 +322,9 @@ void n_invetory_changer::impl_t::ApplyWeapons( IPlayerInventory* LocalInventory,
 }
 void n_invetory_changer::impl_t::ApplyKnifes( IPlayerInventory* LocalInventory, player_info_t info )
 {
+	if ( !LocalInventory || !g_ctx.m_local || !g_interfaces.m_client_entity_list || !g_interfaces.m_model_info )
+		return;
+
 	C_EconItemView* pEconItemView = LocalInventory->GetItemInLoadout( static_cast< int >( g_ctx.m_local->get_team( ) ), 0 );
 	if ( !pEconItemView )
 		return;
@@ -319,7 +340,13 @@ void n_invetory_changer::impl_t::ApplyKnifes( IPlayerInventory* LocalInventory, 
 	for ( auto iIndex = 0; m_hMyWeapons[ iIndex ] != 0xFFFFFFFF; iIndex++ ) {
 		c_base_entity* pWeapon =
 			static_cast< c_base_entity* >( g_interfaces.m_client_entity_list->get_client_entity_from_handle( m_hMyWeapons[ iIndex ] ) );
-		if ( !pWeapon || fnv1a::hash( g_items_manager.items[ pWeapon->m_nItemID( ) ]->m_szType ) != fnv1a::hash( "#CSGO_Type_Knife" ) )
+		if ( !pWeapon )
+			continue;
+
+		const auto weapon_id = pWeapon->m_nItemID( );
+		const auto weapon_definition = g_items_manager.items[ weapon_id ];
+		if ( !weapon_definition || !weapon_definition->m_szType ||
+		     fnv1a::hash( weapon_definition->m_szType ) != fnv1a::hash( "#CSGO_Type_Knife" ) )
 			continue;
 
 		if ( info.m_xuid_low != pWeapon->get_owner_xuid_low( ) || info.m_xuid_high != pWeapon->get_owner_xuid_high( ) )
@@ -333,7 +360,9 @@ void n_invetory_changer::impl_t::ApplyKnifes( IPlayerInventory* LocalInventory, 
 		pWeapon->get_item_id_high( ) = iHighID;
 		pWeapon->get_account_id( )  = static_cast< int32_t >( info.m_ull_xuid );
 		pWeapon->m_nItemID( )     = pSocData->m_nWeaponID;
-		pWeapon->set_model_index( g_interfaces.m_model_info->get_model_index( g_items_manager.items[ pSocData->m_nWeaponID ]->m_szDisplayModelName ) );
+		const auto knife_definition = g_items_manager.items[ pSocData->m_nWeaponID ];
+		if ( knife_definition && knife_definition->m_szDisplayModelName )
+			pWeapon->set_model_index( g_interfaces.m_model_info->get_model_index( knife_definition->m_szDisplayModelName ) );
 	}
 
 	/* Get viewmodel */
@@ -349,13 +378,14 @@ void n_invetory_changer::impl_t::ApplyKnifes( IPlayerInventory* LocalInventory, 
 	/* Set world model index */
 	c_base_entity* pWorldModel = reinterpret_cast< c_base_entity* >(
 		g_interfaces.m_client_entity_list->get_client_entity_from_handle( pViewModelWeapon->m_hWeaponWorldModel( ) ) );
-	if ( pWorldModel )
+	const auto viewmodel_definition = g_items_manager.items[ pViewModelWeapon->m_nItemID( ) ];
+	if ( pWorldModel && viewmodel_definition && viewmodel_definition->m_szWorldModelName )
 		pWorldModel->get_model_index( ) =
-			g_interfaces.m_model_info->get_model_index( g_items_manager.items[ pViewModelWeapon->m_nItemID( ) ]->m_szWorldModelName );
+			g_interfaces.m_model_info->get_model_index( viewmodel_definition->m_szWorldModelName );
 
 	/* Set viewmodel weapon index */
-	pViewModel->get_model_index( ) =
-		g_interfaces.m_model_info->get_model_index( g_items_manager.items[ pViewModelWeapon->m_nItemID( ) ]->m_szDisplayModelName );
+	if ( viewmodel_definition && viewmodel_definition->m_szDisplayModelName )
+		pViewModel->get_model_index( ) = g_interfaces.m_model_info->get_model_index( viewmodel_definition->m_szDisplayModelName );
 }
 
 void n_invetory_changer::impl_t::ApplyAgents( IPlayerInventory* LocalInventory, e_client_frame_stage Stage )
@@ -548,7 +578,8 @@ void n_invetory_changer::impl_t::AddItemToInventory( IPlayerInventory* pLocalInv
 }
 void n_invetory_changer::impl_t::OnPostDataUpdateStart( IPlayerInventory* LocalInventory )
 {
-	if ( !g_ctx.m_local->is_alive( ) || g_interfaces.m_client_state->m_signon_state < 6 )
+	if ( !LocalInventory || !g_ctx.m_local || !g_ctx.m_local->is_alive( ) || !g_interfaces.m_client_state ||
+	     g_interfaces.m_client_state->m_signon_state < 6 || !g_interfaces.m_engine_client )
 		return;
 
 	player_info_t Info;
@@ -631,9 +662,18 @@ void n_invetory_changer::impl_t::full_hud_update( )
 }
 void n_invetory_changer::impl_t::OnFrameStageNotify( e_client_frame_stage Stage )
 {
-	IPlayerInventory* pLocalInventory = g_interfaces.m_inventory_manager->GetLocalPlayerInventory( );
-	if ( !pLocalInventory )
+	drainware_stability_breadcrumb( "inventory_frame_stage" );
+	if ( !g_interfaces.m_inventory_manager || !g_ctx.m_local ) {
+		g_drainware_inventory_health = "waiting for local inventory";
 		return;
+	}
+
+	IPlayerInventory* pLocalInventory = g_interfaces.m_inventory_manager->GetLocalPlayerInventory( );
+	if ( !pLocalInventory ) {
+		g_drainware_inventory_health = "missing local inventory";
+		return;
+	}
+	g_drainware_inventory_health = "OK";
 
 	switch ( Stage ) {
 	case e_client_frame_stage::render_start: {

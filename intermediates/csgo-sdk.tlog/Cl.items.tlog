@@ -52,6 +52,7 @@ Y:\src\hooks\functions\create_move_proxy.cpp;Y:\src\intermediates\create_move_pr
 Y:\src\hooks\functions\draw_model_execute.cpp;Y:\src\intermediates\draw_model_execute.obj
 Y:\src\hooks\functions\draw_set_color.cpp;Y:\src\intermediates\draw_set_color.obj
 Y:\src\hooks\functions\draw_view_models.cpp;Y:\src\intermediates\draw_view_models.obj
+Y:\src\hooks\functions\emit_sound.cpp;Y:\src\intermediates\emit_sound.obj
 Y:\src\hooks\functions\end_scene.cpp;Y:\src\intermediates\end_scene.obj
 Y:\src\hooks\functions\find_material.cpp;Y:\src\intermediates\find_material.obj
 Y:\src\hooks\functions\fire_event_intern.cpp;Y:\src\intermediates\fire_event_intern.obj

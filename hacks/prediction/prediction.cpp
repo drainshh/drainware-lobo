@@ -1,6 +1,7 @@
 #include "prediction.h"
 #include "../../game/sdk/includes/includes.h"
 #include "../../globals/includes/includes.h"
+#include "../movement/movement_assist_simulation.h"
 
 void n_prediction::impl_t::update( )
 {
@@ -98,9 +99,14 @@ void n_prediction::impl_t::begin( c_base_entity* local, c_user_cmd* cmd )
 	g_interfaces.m_game_movement->process_movement( local, &m_move_data );
 	g_interfaces.m_prediction->finish_move( local, cmd, &m_move_data );
 
-	g_interfaces.m_move_helper->process_impacts( );
-
-	local->post_think( );
+	if ( !g_in_movement_assist_simulation ) {
+		g_interfaces.m_move_helper->process_impacts( );
+		local->post_think( );
+	} else {
+		movement_assist_debug_log( "assist", std::string( "suppressed process_impacts/post_think reason=" ) +
+		                                       g_movement_assist_simulation_reason,
+		                           0.25f, "prediction_side_effects" );
+	}
 
 	g_interfaces.m_prediction->m_in_prediction           = old_in_prediction;
 	g_interfaces.m_prediction->m_is_first_time_predicted = old_is_first_prediction;

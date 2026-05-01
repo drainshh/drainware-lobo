@@ -59,6 +59,7 @@
     <ClCompile Include="hooks\functions\draw_model_execute.cpp" />
     <ClCompile Include="hooks\functions\draw_set_color.cpp" />
     <ClCompile Include="hooks\functions\draw_view_models.cpp" />
+    <ClCompile Include="hooks\functions\emit_sound.cpp" />
     <ClCompile Include="hooks\functions\end_scene.cpp" />
     <ClCompile Include="hooks\functions\find_material.cpp" />
     <ClCompile Include="hooks\functions\fire_event_intern.cpp" />
