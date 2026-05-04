@@ -1,9 +1,10 @@
-﻿#define IMGUI_DEFINE_MATH_OPERATORS
+#define IMGUI_DEFINE_MATH_OPERATORS
 #include "menu.h"
 #include "../../globals/branding/branding.h"
 #include "../../globals/fonts/fonts.h"
 #include "../../globals/includes/includes.h"
 #include "../../globals/logger/logger.h"
+#include "../../resources/embedded/watermark_assets.h"
 #include "../misc/misc.h"
 #include "../misc/scaleform/scaleform.h"
 #include "../movement/movement.h"
@@ -20,12 +21,16 @@
 #include "../elements/combobox.hh"
 #include "../elements/i_text.hh"
 #include "../aimbot/aimbot.h"
+#include "../../third_party/imgui_extra/ImCurveEdit.h"
+#include "../../third_party/imgui_extra/ImGradient.h"
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <cstring>
+#include <cmath>
 #include <fstream>
 #include <sstream>
+#include <vector>
 constexpr int color_picker_alpha_flags = ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_AlphaBar | ImGuiColorEditFlags_AlphaPreviewHalf |
                                          ImGuiColorEditFlags_NoOptions | ImGuiColorEditFlags_InputRGB | ImGuiColorEditFlags_NoInputs |
                                          ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop | ImGuiColorEditFlags_PickerHueBar |
@@ -130,17 +135,81 @@ constexpr std::array skyboxList{ "default",
 	                             "custom" };
 extern bool point_menu_is_opened( );
 
+std::vector< const char* >& get_watermark_mode_labels( )
+{
+	static std::vector< const char* > labels;
+	if ( labels.empty( ) ) {
+		labels.reserve( 4U + n_embedded_assets::g_extra_watermark_assets_count );
+		labels.push_back( "off" );
+		labels.push_back( "drainware" );
+		labels.push_back( "clarity" );
+		labels.push_back( "rgb / chroma" );
+		for ( std::size_t i = 0; i < n_embedded_assets::g_extra_watermark_assets_count; ++i )
+			labels.push_back( n_embedded_assets::g_extra_watermark_assets[ i ].label );
+	}
+	return labels;
+}
+
+std::vector< const char* >& get_menu_logo_mode_labels( )
+{
+	static std::vector< const char* > labels;
+	if ( labels.empty( ) ) {
+		labels.reserve( 3U + n_embedded_assets::g_extra_watermark_assets_count );
+		labels.push_back( "fake drain" );
+		labels.push_back( "clarity" );
+		labels.push_back( "match watermark" );
+		for ( std::size_t i = 0; i < n_embedded_assets::g_extra_watermark_assets_count; ++i )
+			labels.push_back( n_embedded_assets::g_extra_watermark_assets[ i ].label );
+	}
+	return labels;
+}
+
 IDirect3DTexture9* get_menu_logo_texture( )
 {
-	static IDirect3DTexture9* logo_texture = nullptr;
-	static bool tried_logo = false;
+	static IDirect3DTexture9* fake_drain_texture = nullptr;
+	static IDirect3DTexture9* clarity_texture = nullptr;
+	static std::vector< IDirect3DTexture9* > extra_logo_textures;
+	static bool tried_logo_textures = false;
 
-	if ( !tried_logo && g_interfaces.m_direct_device ) {
-		D3DXCreateTextureFromFileA( g_interfaces.m_direct_device, n_branding::k_logo_file, &logo_texture );
-		tried_logo = true;
+	if ( !tried_logo_textures && g_interfaces.m_direct_device ) {
+		D3DXCreateTextureFromFileInMemory( g_interfaces.m_direct_device, n_embedded_assets::g_fake_drain_watermark_png,
+		                                   static_cast< UINT >( n_embedded_assets::g_fake_drain_watermark_png_size ), &fake_drain_texture );
+		D3DXCreateTextureFromFileInMemory( g_interfaces.m_direct_device, n_embedded_assets::g_clarity_watermark_png,
+		                                   static_cast< UINT >( n_embedded_assets::g_clarity_watermark_png_size ), &clarity_texture );
+		extra_logo_textures.assign( n_embedded_assets::g_extra_watermark_assets_count, nullptr );
+		for ( std::size_t i = 0; i < n_embedded_assets::g_extra_watermark_assets_count; ++i ) {
+			const auto& asset = n_embedded_assets::g_extra_watermark_assets[ i ];
+			if ( asset.data && asset.size > 0U )
+				D3DXCreateTextureFromFileInMemory( g_interfaces.m_direct_device, asset.data, static_cast< UINT >( asset.size ),
+				                                   &extra_logo_textures[ i ] );
+		}
+		tried_logo_textures = true;
 	}
 
-	return logo_texture;
+	const int max_logo_mode = static_cast< int >( 2 + n_embedded_assets::g_extra_watermark_assets_count );
+	int mode = std::clamp( GET_VARIABLE( g_variables.m_menu_logo_mode, int ), 0, max_logo_mode );
+	if ( mode == 2 ) {
+		const int watermark_mode = std::clamp( GET_VARIABLE( g_variables.m_watermark_mode, int ), 0,
+		                                       static_cast< int >( 3 + n_embedded_assets::g_extra_watermark_assets_count ) );
+		if ( watermark_mode == 2 )
+			return clarity_texture ? clarity_texture : fake_drain_texture;
+		if ( watermark_mode >= 4 ) {
+			const int extra_index = watermark_mode - 4;
+			if ( extra_index >= 0 && extra_index < static_cast< int >( extra_logo_textures.size( ) ) &&
+			     extra_logo_textures[ extra_index ] )
+				return extra_logo_textures[ extra_index ];
+		}
+		return fake_drain_texture ? fake_drain_texture : clarity_texture;
+	}
+	if ( mode == 1 )
+		return clarity_texture ? clarity_texture : fake_drain_texture;
+	if ( mode >= 3 ) {
+		const int extra_index = mode - 3;
+		if ( extra_index >= 0 && extra_index < static_cast< int >( extra_logo_textures.size( ) ) && extra_logo_textures[ extra_index ] )
+			return extra_logo_textures[ extra_index ];
+	}
+
+	return fake_drain_texture ? fake_drain_texture : clarity_texture;
 }
 
 
@@ -464,6 +533,180 @@ namespace
 
 	preset_snapshot_t g_last_preset_snapshot{ };
 
+	c_color lerp_color( const c_color& a, const c_color& b, const float t )
+	{
+		const float clamped = std::clamp( t, 0.f, 1.f );
+		return c_color( static_cast< int >( std::lerp( static_cast< float >( a[ 0 ] ), static_cast< float >( b[ 0 ] ), clamped ) ),
+		                static_cast< int >( std::lerp( static_cast< float >( a[ 1 ] ), static_cast< float >( b[ 1 ] ), clamped ) ),
+		                static_cast< int >( std::lerp( static_cast< float >( a[ 2 ] ), static_cast< float >( b[ 2 ] ), clamped ) ),
+		                static_cast< int >( std::lerp( static_cast< float >( a[ 3 ] ), static_cast< float >( b[ 3 ] ), clamped ) ) );
+	}
+
+	c_color active_theme_accent_color( )
+	{
+		if ( !GET_VARIABLE( g_variables.m_theme_accent_gradient, bool ) )
+			return GET_VARIABLE( g_variables.m_accent, c_color );
+
+		const float speed = std::clamp( GET_VARIABLE( g_variables.m_watermark_chroma_speed, float ), 0.15f, 4.f );
+		const float t = 0.5f + 0.5f * std::sin( static_cast< float >( ImGui::GetTime( ) ) * speed * 0.75f );
+		return lerp_color( GET_VARIABLE( g_variables.m_theme_gradient_start, c_color ),
+		                   GET_VARIABLE( g_variables.m_theme_gradient_end, c_color ), t );
+	}
+
+	ImVec4 gradient_point_from_color( const c_color& color, const float position )
+	{
+		return ImVec4( color[ 0 ] / 255.f, color[ 1 ] / 255.f, color[ 2 ] / 255.f, std::clamp( position, 0.f, 1.f ) );
+	}
+
+	void write_color_from_gradient_point( c_color& color, const ImVec4& point )
+	{
+		color = c_color( static_cast< int >( std::clamp( point.x, 0.f, 1.f ) * 255.f ),
+		                 static_cast< int >( std::clamp( point.y, 0.f, 1.f ) * 255.f ),
+		                 static_cast< int >( std::clamp( point.z, 0.f, 1.f ) * 255.f ), 255 );
+	}
+
+	struct theme_gradient_delegate_t : ImGradient::Delegate {
+		std::array< ImVec4, 2 > points{ };
+
+		theme_gradient_delegate_t( )
+		{
+			points[ 0 ] = gradient_point_from_color( GET_VARIABLE( g_variables.m_theme_gradient_start, c_color ), 0.f );
+			points[ 1 ] = gradient_point_from_color( GET_VARIABLE( g_variables.m_theme_gradient_end, c_color ), 1.f );
+		}
+
+		size_t GetPointCount( ) override
+		{
+			return points.size( );
+		}
+
+		ImVec4* GetPoints( ) override
+		{
+			return points.data( );
+		}
+
+		int EditPoint( int pointIndex, ImVec4 value ) override
+		{
+			pointIndex = std::clamp( pointIndex, 0, static_cast< int >( points.size( ) ) - 1 );
+			value.w = pointIndex == 0 ? 0.f : 1.f;
+			points[ pointIndex ] = value;
+			if ( pointIndex == 0 )
+				write_color_from_gradient_point( GET_VARIABLE( g_variables.m_theme_gradient_start, c_color ), value );
+			else
+				write_color_from_gradient_point( GET_VARIABLE( g_variables.m_theme_gradient_end, c_color ), value );
+			return pointIndex;
+		}
+
+		ImVec4 GetPoint( float t ) override
+		{
+			t = std::clamp( t, 0.f, 1.f );
+			return ImVec4( std::lerp( points[ 0 ].x, points[ 1 ].x, t ), std::lerp( points[ 0 ].y, points[ 1 ].y, t ),
+			               std::lerp( points[ 0 ].z, points[ 1 ].z, t ), t );
+		}
+
+		void AddPoint( ImVec4 value ) override
+		{
+			EditPoint( value.w < 0.5f ? 0 : 1, value );
+		}
+	};
+
+	void set_theme_curve_preset( const int preset )
+	{
+		auto& curve = GET_VARIABLE( g_variables.m_theme_animation_curve, std::vector< float > );
+		curve.resize( 6 );
+		switch ( preset ) {
+		case 0: // linear
+			curve = { 0.f, 0.f, 0.5f, 0.5f, 1.f, 1.f };
+			break;
+		case 1: // ease out
+			curve = { 0.f, 0.f, 0.28f, 0.88f, 1.f, 1.f };
+			break;
+		case 2: // ease in out
+			curve = { 0.f, 0.f, 0.46f, 0.12f, 1.f, 1.f };
+			break;
+		case 3: // spring-ish
+			curve = { 0.f, 0.f, 0.62f, 1.12f, 1.f, 1.f };
+			break;
+		default:
+			break;
+		}
+	}
+
+	struct theme_curve_delegate_t : ImCurveEdit::Delegate {
+		std::array< ImVec2, 3 > points{ };
+		ImVec2 min{ 0.f, -0.2f };
+		ImVec2 max{ 1.f, 1.2f };
+
+		theme_curve_delegate_t( )
+		{
+			auto& curve = GET_VARIABLE( g_variables.m_theme_animation_curve, std::vector< float > );
+			if ( curve.size( ) < 6U )
+				curve = { 0.f, 0.f, 0.28f, 0.88f, 1.f, 1.f };
+			points[ 0 ] = ImVec2( std::clamp( curve[ 0 ], 0.f, 1.f ), std::clamp( curve[ 1 ], -0.2f, 1.2f ) );
+			points[ 1 ] = ImVec2( std::clamp( curve[ 2 ], 0.f, 1.f ), std::clamp( curve[ 3 ], -0.2f, 1.2f ) );
+			points[ 2 ] = ImVec2( std::clamp( curve[ 4 ], 0.f, 1.f ), std::clamp( curve[ 5 ], -0.2f, 1.2f ) );
+			points[ 0 ].x = 0.f;
+			points[ 2 ].x = 1.f;
+		}
+
+		void write_back( )
+		{
+			auto& curve = GET_VARIABLE( g_variables.m_theme_animation_curve, std::vector< float > );
+			curve = { points[ 0 ].x, points[ 0 ].y, points[ 1 ].x, points[ 1 ].y, points[ 2 ].x, points[ 2 ].y };
+			GET_VARIABLE( g_variables.m_theme_curve_preset, int ) = 4;
+		}
+
+		size_t GetCurveCount( ) override
+		{
+			return 1;
+		}
+
+		ImCurveEdit::CurveType GetCurveType( size_t ) const override
+		{
+			return ImCurveEdit::CurveSmooth;
+		}
+
+		ImVec2& GetMin( ) override
+		{
+			return min;
+		}
+
+		ImVec2& GetMax( ) override
+		{
+			return max;
+		}
+
+		size_t GetPointCount( size_t ) override
+		{
+			return points.size( );
+		}
+
+		uint32_t GetCurveColor( size_t ) override
+		{
+			return active_theme_accent_color( ).get_u32( 0.95f );
+		}
+
+		ImVec2* GetPoints( size_t ) override
+		{
+			return points.data( );
+		}
+
+		int EditPoint( size_t, int pointIndex, ImVec2 value ) override
+		{
+			pointIndex = std::clamp( pointIndex, 0, static_cast< int >( points.size( ) ) - 1 );
+			value.x = pointIndex == 0 ? 0.f : pointIndex == 2 ? 1.f : std::clamp( value.x, 0.02f, 0.98f );
+			value.y = std::clamp( value.y, -0.2f, 1.2f );
+			points[ pointIndex ] = value;
+			write_back( );
+			return pointIndex;
+		}
+
+		void AddPoint( size_t, ImVec2 value ) override
+		{
+			points[ 1 ] = ImVec2( std::clamp( value.x, 0.02f, 0.98f ), std::clamp( value.y, -0.2f, 1.2f ) );
+			write_back( );
+		}
+	};
+
 	std::string lower_copy( std::string value )
 	{
 		std::transform( value.begin( ), value.end( ), value.begin( ), []( unsigned char ch ) { return static_cast< char >( std::tolower( ch ) ); } );
@@ -657,31 +900,56 @@ namespace
 	void apply_theme_preset( const int preset )
 	{
 		drainware_stability_breadcrumb( "theme_preset_apply" );
+		GET_VARIABLE( g_variables.m_theme_accent_gradient, bool ) = false;
 		switch ( preset ) {
 		case 0:
 			GET_VARIABLE( g_variables.m_accent, c_color ) = c_color( 174, 255, 0, 255 );
 			GET_VARIABLE( g_variables.m_theme_corner_radius, float ) = 6.f;
 			GET_VARIABLE( g_variables.m_theme_glow_strength, float ) = 0.35f;
+			GET_VARIABLE( g_variables.m_theme_gradient_start, c_color ) = c_color( 174, 255, 0, 255 );
+			GET_VARIABLE( g_variables.m_theme_gradient_end, c_color ) = c_color( 70, 180, 255, 255 );
+			set_theme_curve_preset( 1 );
 			break;
 		case 1:
 			GET_VARIABLE( g_variables.m_accent, c_color ) = c_color( 60, 255, 120, 255 );
 			GET_VARIABLE( g_variables.m_theme_corner_radius, float ) = 7.f;
 			GET_VARIABLE( g_variables.m_theme_background_alpha, float ) = 0.92f;
+			GET_VARIABLE( g_variables.m_theme_gradient_start, c_color ) = c_color( 60, 255, 120, 255 );
+			GET_VARIABLE( g_variables.m_theme_gradient_end, c_color ) = c_color( 150, 220, 255, 255 );
+			set_theme_curve_preset( 2 );
 			break;
 		case 2:
 			GET_VARIABLE( g_variables.m_accent, c_color ) = c_color( 190, 190, 190, 255 );
 			GET_VARIABLE( g_variables.m_theme_corner_radius, float ) = 2.f;
 			GET_VARIABLE( g_variables.m_theme_glow_strength, float ) = 0.08f;
+			GET_VARIABLE( g_variables.m_theme_gradient_start, c_color ) = c_color( 190, 190, 190, 255 );
+			GET_VARIABLE( g_variables.m_theme_gradient_end, c_color ) = c_color( 80, 80, 80, 255 );
+			set_theme_curve_preset( 0 );
 			break;
 		case 3:
 			GET_VARIABLE( g_variables.m_accent, c_color ) = c_color( 255, 90, 90, 255 );
 			GET_VARIABLE( g_variables.m_theme_background_alpha, float ) = 1.f;
 			GET_VARIABLE( g_variables.m_theme_glow_strength, float ) = 0.2f;
+			GET_VARIABLE( g_variables.m_theme_gradient_start, c_color ) = c_color( 255, 90, 90, 255 );
+			GET_VARIABLE( g_variables.m_theme_gradient_end, c_color ) = c_color( 255, 185, 95, 255 );
+			set_theme_curve_preset( 1 );
 			break;
 		case 4:
 			GET_VARIABLE( g_variables.m_accent, c_color ) = c_color( 220, 220, 220, 255 );
 			GET_VARIABLE( g_variables.m_theme_corner_radius, float ) = 4.f;
 			GET_VARIABLE( g_variables.m_theme_glow_strength, float ) = 0.f;
+			GET_VARIABLE( g_variables.m_theme_gradient_start, c_color ) = c_color( 220, 220, 220, 255 );
+			GET_VARIABLE( g_variables.m_theme_gradient_end, c_color ) = c_color( 140, 140, 140, 255 );
+			set_theme_curve_preset( 0 );
+			break;
+		case 5:
+			GET_VARIABLE( g_variables.m_accent, c_color ) = c_color( 174, 255, 0, 255 );
+			GET_VARIABLE( g_variables.m_theme_accent_gradient, bool ) = true;
+			GET_VARIABLE( g_variables.m_theme_gradient_start, c_color ) = c_color( 174, 255, 0, 255 );
+			GET_VARIABLE( g_variables.m_theme_gradient_end, c_color ) = c_color( 255, 70, 220, 255 );
+			GET_VARIABLE( g_variables.m_watermark_mode, int ) = 3;
+			GET_VARIABLE( g_variables.m_theme_glow_strength, float ) = 0.5f;
+			set_theme_curve_preset( 3 );
 			break;
 		default:
 			break;
@@ -763,8 +1031,20 @@ namespace
 			return false;
 
 		const auto accent = GET_VARIABLE( g_variables.m_accent, c_color );
+		const auto gradient_start = GET_VARIABLE( g_variables.m_theme_gradient_start, c_color );
+		const auto gradient_end = GET_VARIABLE( g_variables.m_theme_gradient_end, c_color );
+		const auto& curve = GET_VARIABLE( g_variables.m_theme_animation_curve, std::vector< float > );
 		file << "accent " << int( accent.get< e_color_type::color_type_r >( ) ) << ' ' << int( accent.get< e_color_type::color_type_g >( ) ) << ' '
 		     << int( accent.get< e_color_type::color_type_b >( ) ) << ' ' << int( accent.get< e_color_type::color_type_a >( ) ) << '\n'
+		     << "accent_gradient " << GET_VARIABLE( g_variables.m_theme_accent_gradient, bool ) << '\n'
+		     << "gradient_start " << int( gradient_start[ 0 ] ) << ' ' << int( gradient_start[ 1 ] ) << ' ' << int( gradient_start[ 2 ] ) << ' '
+		     << int( gradient_start[ 3 ] ) << '\n'
+		     << "gradient_end " << int( gradient_end[ 0 ] ) << ' ' << int( gradient_end[ 1 ] ) << ' ' << int( gradient_end[ 2 ] ) << ' '
+		     << int( gradient_end[ 3 ] ) << '\n'
+		     << "curve_preset " << GET_VARIABLE( g_variables.m_theme_curve_preset, int ) << '\n'
+		     << "curve " << ( curve.size( ) > 0U ? curve[ 0 ] : 0.f ) << ' ' << ( curve.size( ) > 1U ? curve[ 1 ] : 0.f ) << ' '
+		     << ( curve.size( ) > 2U ? curve[ 2 ] : 0.28f ) << ' ' << ( curve.size( ) > 3U ? curve[ 3 ] : 0.88f ) << ' '
+		     << ( curve.size( ) > 4U ? curve[ 4 ] : 1.f ) << ' ' << ( curve.size( ) > 5U ? curve[ 5 ] : 1.f ) << '\n'
 		     << "background_alpha " << GET_VARIABLE( g_variables.m_theme_background_alpha, float ) << '\n'
 		     << "border_alpha " << GET_VARIABLE( g_variables.m_theme_border_alpha, float ) << '\n'
 		     << "corner_radius " << GET_VARIABLE( g_variables.m_theme_corner_radius, float ) << '\n'
@@ -773,6 +1053,7 @@ namespace
 		     << "menu_scale " << GET_VARIABLE( g_variables.m_menu_scale, float ) << '\n'
 		     << "font_scale " << GET_VARIABLE( g_variables.m_theme_font_scale, float ) << '\n'
 		     << "animation_speed " << GET_VARIABLE( g_variables.m_ui_animation_speed, float ) << '\n'
+		     << "scrollbar_size " << GET_VARIABLE( g_variables.m_theme_scrollbar_size, float ) << '\n'
 		     << "glow_strength " << GET_VARIABLE( g_variables.m_theme_glow_strength, float ) << '\n'
 		     << "layout_mode " << GET_VARIABLE( g_variables.m_theme_layout_mode, int ) << '\n'
 		     << "columns " << GET_VARIABLE( g_variables.m_theme_columns, int ) << '\n';
@@ -792,6 +1073,22 @@ namespace
 				int r = 174, g = 255, b = 0, a = 255;
 				file >> r >> g >> b >> a;
 				GET_VARIABLE( g_variables.m_accent, c_color ) = c_color( r, g, b, a );
+			} else if ( key == "accent_gradient" ) {
+				file >> GET_VARIABLE( g_variables.m_theme_accent_gradient, bool );
+			} else if ( key == "gradient_start" ) {
+				int r = 174, g = 255, b = 0, a = 255;
+				file >> r >> g >> b >> a;
+				GET_VARIABLE( g_variables.m_theme_gradient_start, c_color ) = c_color( r, g, b, a );
+			} else if ( key == "gradient_end" ) {
+				int r = 70, g = 180, b = 255, a = 255;
+				file >> r >> g >> b >> a;
+				GET_VARIABLE( g_variables.m_theme_gradient_end, c_color ) = c_color( r, g, b, a );
+			} else if ( key == "curve_preset" ) {
+				file >> GET_VARIABLE( g_variables.m_theme_curve_preset, int );
+			} else if ( key == "curve" ) {
+				auto& curve = GET_VARIABLE( g_variables.m_theme_animation_curve, std::vector< float > );
+				curve.resize( 6 );
+				file >> curve[ 0 ] >> curve[ 1 ] >> curve[ 2 ] >> curve[ 3 ] >> curve[ 4 ] >> curve[ 5 ];
 			} else if ( key == "background_alpha" ) {
 				file >> GET_VARIABLE( g_variables.m_theme_background_alpha, float );
 			} else if ( key == "border_alpha" ) {
@@ -808,6 +1105,8 @@ namespace
 				file >> GET_VARIABLE( g_variables.m_theme_font_scale, float );
 			} else if ( key == "animation_speed" ) {
 				file >> GET_VARIABLE( g_variables.m_ui_animation_speed, float );
+			} else if ( key == "scrollbar_size" ) {
+				file >> GET_VARIABLE( g_variables.m_theme_scrollbar_size, float );
 			} else if ( key == "glow_strength" ) {
 				file >> GET_VARIABLE( g_variables.m_theme_glow_strength, float );
 			} else if ( key == "layout_mode" ) {
@@ -884,8 +1183,7 @@ namespace
 		const auto draw_list = ImGui::GetWindowDrawList( );
 
 		draw_list->AddRectFilled( min, max, ImColor( 12, 12, 12, int( 220 * g_menu.m_animation_progress ) ), 4.f );
-		draw_list->AddRect( min, max, ImColor( GET_VARIABLE( g_variables.m_accent, c_color ).get_u32( 0.35f * g_menu.m_animation_progress ) ),
-		                     4.f );
+		draw_list->AddRect( min, max, ImColor( active_theme_accent_color( ).get_u32( 0.35f * g_menu.m_animation_progress ) ), 4.f );
 
 		const std::string text = std::string( "guard: " ) + snapshot.prediction_guard + " | particles: " + snapshot.particles +
 		                         " | sound: " + snapshot.sound_guard + " | last: " + snapshot.last_error;
@@ -896,7 +1194,8 @@ namespace
 
 void n_menu::impl_t::on_end_scene( )
 {
-	ImGui::GetStyle( ).Colors[ ImGuiCol_::ImGuiCol_Accent ] = GET_VARIABLE( g_variables.m_accent, c_color ).get_vec4( );
+	const auto active_accent = active_theme_accent_color( );
+	ImGui::GetStyle( ).Colors[ ImGuiCol_::ImGuiCol_Accent ] = active_accent.get_vec4( );
 	m_animation_speed = std::clamp( GET_VARIABLE( g_variables.m_ui_animation_speed, float ), 0.6f, 8.f );
 
 	// Обновление прогресса анимации (оставляем как есть)
@@ -991,6 +1290,7 @@ void n_menu::impl_t::on_end_scene( )
 		// Для затемнения окон при навигации или модальных окнах можно задать меньшую альфу:
 		style.Colors[ ImGuiCol_NavWindowingDimBg ] = ImVec4( 0 / 255.f, 0 / 255.f, 0 / 255.f, 0.5f * g_menu.m_animation_progress );
 		style.Colors[ ImGuiCol_ModalWindowDimBg ]  = ImVec4( 0 / 255.f, 0 / 255.f, 0 / 255.f, 0.5f * g_menu.m_animation_progress );
+		style.ScrollbarSize = std::clamp( GET_VARIABLE( g_variables.m_theme_scrollbar_size, float ), 4.f, 16.f );
 		style.ItemSpacing.y = std::clamp( GET_VARIABLE( g_variables.m_menu_section_spacing, float ), 3.f, 16.f );
 		style.ItemSpacing.x = std::clamp( GET_VARIABLE( g_variables.m_theme_column_spacing, float ), 4.f, 22.f );
 	}
@@ -1014,7 +1314,7 @@ void n_menu::impl_t::on_end_scene( )
 		                                          ImColor( 25, 25, 25, int( 255 * m_animation_progress ) ), 6.0f, ImDrawFlags_RoundCornersAll );
 		const float glow_strength = std::clamp( GET_VARIABLE( g_variables.m_theme_glow_strength, float ), 0.f, 1.f );
 		if ( glow_strength > 0.01f ) {
-			const auto glow = ImColor( GET_VARIABLE( g_variables.m_accent, c_color ).get_u32( glow_strength * 65.f / 255.f * m_animation_progress ) );
+			const auto glow = ImColor( active_accent.get_u32( glow_strength * 65.f / 255.f * m_animation_progress ) );
 			ImGui::GetBackgroundDrawList( )->AddRect( ImGui::GetWindowPos( ) - ImVec2( 2.f, 2.f ),
 			                                          ImGui::GetWindowPos( ) + ImGui::GetWindowSize( ) + ImVec2( 2.f, 2.f ), glow,
 			                                          std::clamp( GET_VARIABLE( g_variables.m_theme_corner_radius, float ), 0.f, 12.f ) + 2.f,
@@ -1536,7 +1836,71 @@ void n_menu::impl_t::on_end_scene( )
 						slider_float( "pulse threshold", &GET_VARIABLE( g_variables.m_speed_pulse_threshold, float ), 120.f, 520.f, "%.0f u/s" );
 					} );
 					checkbox( "strafe aura", &GET_VARIABLE( g_variables.m_strafe_aura, bool ) );
-					checkbox( "velocity graph", &GET_VARIABLE( g_variables.m_velocity_graph, bool ) );
+					checkbox( "velocity graph", &GET_VARIABLE( g_variables.m_velocity_graph, bool ), false, true, { 200, -1 }, []() {
+						checkbox( "compact mode", &GET_VARIABLE( g_variables.m_velocity_graph_compact, bool ) );
+						checkbox( "show velocity", &GET_VARIABLE( g_variables.m_velocity_graph_show_velocity, bool ) );
+						checkbox( "show acceleration", &GET_VARIABLE( g_variables.m_velocity_graph_show_accel, bool ) );
+						checkbox( "show vertical velocity", &GET_VARIABLE( g_variables.m_velocity_graph_show_vertical, bool ) );
+						checkbox( "show direction labels", &GET_VARIABLE( g_variables.m_velocity_graph_show_dir_labels, bool ) );
+						checkbox( "show tech markers", &GET_VARIABLE( g_variables.m_velocity_graph_show_tech_markers, bool ) );
+						checkbox( "show gain/loss color", &GET_VARIABLE( g_variables.m_velocity_graph_show_gain_loss, bool ) );
+						checkbox( "use accent", &GET_VARIABLE( g_variables.m_velocity_graph_use_accent, bool ) );
+						if ( !GET_VARIABLE( g_variables.m_velocity_graph_use_accent, bool ) ) {
+							ImGui::Text( "graph color" );
+							ImGui::ColorEdit4( "##velocity graph color", &GET_VARIABLE( g_variables.m_velocity_graph_color, c_color ), color_picker_alpha_flags );
+						}
+						slider_int( "graph x", &GET_VARIABLE( g_variables.m_velocity_graph_x, int ), 0, g_ctx.m_width, "%d px" );
+						slider_int( "graph y", &GET_VARIABLE( g_variables.m_velocity_graph_y, int ), 0, g_ctx.m_height, "%d px" );
+						slider_int( "graph width", &GET_VARIABLE( g_variables.m_velocity_graph_w, int ), 140, 640, "%d px" );
+						slider_int( "graph height", &GET_VARIABLE( g_variables.m_velocity_graph_h, int ), 56, 260, "%d px" );
+						slider_int( "sample length", &GET_VARIABLE( g_variables.m_velocity_graph_samples, int ), 32, 220, "%d" );
+						slider_float( "smoothing", &GET_VARIABLE( g_variables.m_velocity_graph_smoothing, float ), 0.05f, 1.f, "%.2f" );
+						if ( button( "reset graph", ImVec2( 210, 0 ) ) )
+							GET_VARIABLE( g_variables.m_velocity_graph_reset, bool ) = true;
+					} );
+					checkbox( "visual keystrokes", &GET_VARIABLE( g_variables.m_keystrokes_overlay, bool ), false, true, { 200, -1 }, []() {
+						const char* styles[] = { "minimal", "fakedrain", "s0beit", "kz/surf", "debug" };
+						combo( "style", GET_VARIABLE( g_variables.m_keystrokes_style, int ), styles, IM_ARRAYSIZE( styles ) );
+						slider_int( "x", &GET_VARIABLE( g_variables.m_keystrokes_x, int ), 0, g_ctx.m_width, "%d px" );
+						slider_int( "y", &GET_VARIABLE( g_variables.m_keystrokes_y, int ), 0, g_ctx.m_height, "%d px" );
+						slider_float( "scale", &GET_VARIABLE( g_variables.m_keystrokes_scale, float ), 0.65f, 2.f, "%.2fx" );
+						slider_float( "spacing", &GET_VARIABLE( g_variables.m_keystrokes_spacing, float ), 0.f, 22.f, "%.1f" );
+						slider_float( "background alpha", &GET_VARIABLE( g_variables.m_keystrokes_bg_alpha, float ), 0.f, 1.f, "%.2f" );
+						checkbox( "use accent", &GET_VARIABLE( g_variables.m_keystrokes_use_accent, bool ) );
+						if ( !GET_VARIABLE( g_variables.m_keystrokes_use_accent, bool ) ) {
+							ImGui::Text( "custom color" );
+							ImGui::ColorEdit4( "##keystrokes color", &GET_VARIABLE( g_variables.m_keystrokes_color, c_color ), color_picker_alpha_flags );
+						}
+						slider_float( "pressed animation speed", &GET_VARIABLE( g_variables.m_keystrokes_anim_speed, float ), 1.f, 20.f, "%.1f" );
+						checkbox( "show mouse buttons", &GET_VARIABLE( g_variables.m_keystrokes_show_mouse, bool ) );
+						checkbox( "show movement binds", &GET_VARIABLE( g_variables.m_keystrokes_show_movement_binds, bool ) );
+						checkbox( "show assist binds", &GET_VARIABLE( g_variables.m_keystrokes_show_assist_binds, bool ) );
+						checkbox( "draggable", &GET_VARIABLE( g_variables.m_keystrokes_draggable, bool ) );
+					} );
+					checkbox( "jump stats", &GET_VARIABLE( g_variables.m_jump_stats_enable, bool ), false, true, { 200, -1 }, []() {
+						checkbox( "show panel", &GET_VARIABLE( g_variables.m_jump_stats_panel, bool ) );
+						checkbox( "print to chat", &GET_VARIABLE( g_variables.m_jump_stats_chat, bool ) );
+						checkbox( "debug log", &GET_VARIABLE( g_variables.m_jump_stats_debug_log, bool ) );
+						checkbox( "play local sound", &GET_VARIABLE( g_variables.m_jump_stats_play_sound, bool ) );
+						ImGui::TextDisabled( "Examples: C:\\drainware\\sounds\\jump_good.wav / jump_insane.wav" );
+						static char jump_sound_path[ 192 ] = "";
+						static std::string last_jump_sound_path;
+						auto& jump_sound = GET_VARIABLE( g_variables.m_jump_stats_sound_path, std::string );
+						if ( jump_sound != last_jump_sound_path ) {
+							strncpy_s( jump_sound_path, sizeof( jump_sound_path ), jump_sound.c_str( ), _TRUNCATE );
+							last_jump_sound_path = jump_sound;
+						}
+						if ( input_text( "sound path", jump_sound_path, jump_sound_path, IM_ARRAYSIZE( jump_sound_path ), 210.f, 20.f, NULL ) ) {
+							jump_sound = jump_sound_path;
+							last_jump_sound_path = jump_sound;
+						}
+						slider_float( "sound threshold", &GET_VARIABLE( g_variables.m_jump_stats_sound_threshold, float ), 100.f, 450.f, "%.0f u/s" );
+						slider_float( "sound cooldown", &GET_VARIABLE( g_variables.m_jump_stats_sound_cooldown, float ), 0.1f, 3.f, "%.2fs" );
+						const char* label_styles[] = { "speed: 320", "speed  320", "speed | 320", "speed -> 320" };
+						combo( "label style", GET_VARIABLE( g_variables.m_jump_stats_label_style, int ), label_styles, IM_ARRAYSIZE( label_styles ) );
+						slider_int( "panel x", &GET_VARIABLE( g_variables.m_jump_stats_x, int ), 0, g_ctx.m_width, "%d px" );
+						slider_int( "panel y", &GET_VARIABLE( g_variables.m_jump_stats_y, int ), 0, g_ctx.m_height, "%d px" );
+					} );
 					checkbox( "local afterimage", &GET_VARIABLE( g_variables.m_local_afterimage, bool ) );
 				} );
 
@@ -1570,6 +1934,30 @@ void n_menu::impl_t::on_end_scene( )
 							ImGui::Text( "run analyzer color" );
 							ImGui::ColorEdit4( "##run analyzer color", &GET_VARIABLE( g_variables.m_run_analyzer_color, c_color ), color_picker_alpha_flags );
 						}
+					} );
+					checkbox( "pixelsurf sounds", &GET_VARIABLE( g_variables.m_px_sound_enable, bool ), false, true, { 200, -1 }, []() {
+						const char* sound_types[] = { "revolver prepare", "local custom file", "off" };
+						combo( "sound type", GET_VARIABLE( g_variables.m_px_sound_type, int ), sound_types, IM_ARRAYSIZE( sound_types ) );
+						ImGui::TextDisabled( "Game path: weapons/revolver/revolver_prepare.wav" );
+						static char px_sound_path[ 192 ] = "";
+						static std::string last_px_sound_path;
+						auto& px_path = GET_VARIABLE( g_variables.m_px_sound_custom_path, std::string );
+						if ( px_path != last_px_sound_path ) {
+							strncpy_s( px_sound_path, sizeof( px_sound_path ), px_path.c_str( ), _TRUNCATE );
+							last_px_sound_path = px_path;
+						}
+						if ( input_text( "custom path", px_sound_path, px_sound_path, IM_ARRAYSIZE( px_sound_path ), 210.f, 20.f, NULL ) ) {
+							px_path = px_sound_path;
+							last_px_sound_path = px_path;
+						}
+						slider_float( "volume", &GET_VARIABLE( g_variables.m_px_sound_volume, float ), 0.f, 1.f, "%.2f" );
+						slider_float( "pitch min", &GET_VARIABLE( g_variables.m_px_sound_pitch_min, float ), 0.5f, 2.f, "%.2f" );
+						slider_float( "pitch max", &GET_VARIABLE( g_variables.m_px_sound_pitch_max, float ), 0.5f, 2.f, "%.2f" );
+						slider_float( "velocity min", &GET_VARIABLE( g_variables.m_px_sound_vel_min, float ), 50.f, 600.f, "%.0f" );
+						slider_float( "velocity max", &GET_VARIABLE( g_variables.m_px_sound_vel_max, float ), 100.f, 800.f, "%.0f" );
+						slider_float( "retrigger rate", &GET_VARIABLE( g_variables.m_px_sound_retrigger, float ), 0.05f, 1.f, "%.2fs" );
+						slider_float( "fade out time", &GET_VARIABLE( g_variables.m_px_sound_fade_out, float ), 0.05f, 1.f, "%.2fs" );
+						checkbox( "debug log", &GET_VARIABLE( g_variables.m_px_sound_debug, bool ) );
 					} );
 					checkbox( "old edit vibes", &GET_VARIABLE( g_variables.m_old_edit_vibes, bool ), false, true, { 200, -1 }, []() {
 						slider_float( "trigger chance", &GET_VARIABLE( g_variables.m_old_edit_vibes_chance, float ), 0.f, 1.f, "%.2f" );
@@ -1622,14 +2010,41 @@ void n_menu::impl_t::on_end_scene( )
 						ImGui::Text( "practice teleport key" );
 						keybind( "practice tp key", &GET_VARIABLE( g_variables.m_practice_tp_key, key_bind_t ) );
 					} );
+					checkbox( "practice mode (local/private)", &GET_VARIABLE( g_variables.m_practice_mode, bool ), false, true, ImVec2( 200, -1 ), []( ) {
+						ImGui::TextWrapped( "Practice Mode is intended for local/private servers only." );
+						checkbox( "run basic setup", &GET_VARIABLE( g_variables.m_practice_basic_setup, bool ) );
+						checkbox( "give weapons/ammo", &GET_VARIABLE( g_variables.m_practice_give_weapons, bool ) );
+						checkbox( "disable fall damage", &GET_VARIABLE( g_variables.m_practice_disable_fall_damage, bool ) );
+						checkbox( "ignore round win conditions", &GET_VARIABLE( g_variables.m_practice_ignore_round_win, bool ) );
+						checkbox( "restart game after apply", &GET_VARIABLE( g_variables.m_practice_restart_after_apply, bool ) );
+						static char practice_cmds[ 256 ] = "";
+						static std::string last_practice_cmds;
+						auto& custom_cmds = GET_VARIABLE( g_variables.m_practice_custom_commands, std::string );
+						if ( custom_cmds != last_practice_cmds ) {
+							strncpy_s( practice_cmds, sizeof( practice_cmds ), custom_cmds.c_str( ), _TRUNCATE );
+							last_practice_cmds = custom_cmds;
+						}
+						if ( input_text( "custom commands (;)", practice_cmds, practice_cmds, IM_ARRAYSIZE( practice_cmds ), 210.f, 20.f, NULL ) ) {
+							custom_cmds = practice_cmds;
+							last_practice_cmds = custom_cmds;
+						}
+						if ( button( "apply practice mode", ImVec2( 210, 0 ) ) )
+							GET_VARIABLE( g_variables.m_practice_apply_requested, bool ) = true;
+						if ( button( "reset practice mode", ImVec2( 210, 0 ) ) )
+							GET_VARIABLE( g_variables.m_practice_reset_requested, bool ) = true;
+					} );
 					const char* displayed_logs[] = { "damage", "team damage", "purchase", "votes" };
 					multi_combo( "displayed logs", GET_VARIABLE( g_variables.m_log_types, std::vector< bool > ), displayed_logs,
 					             GET_VARIABLE( g_variables.m_log_types, std::vector< bool > ).size( ) );
 					checkbox( "hit sound", &GET_VARIABLE( g_variables.m_hit_sound, bool ) );
 					checkbox( "hit marker", &GET_VARIABLE( g_variables.m_hit_marker, bool ) );
 					checkbox( "scaleform", &GET_VARIABLE( g_variables.m_scaleform, bool ) );
-					const char* watermark_modes[] = { "off", "drainware", "clarity", "rgb / chroma" };
-					combo( "watermark", GET_VARIABLE( g_variables.m_watermark_mode, int ), watermark_modes, IM_ARRAYSIZE( watermark_modes ) );
+					auto& watermark_modes = get_watermark_mode_labels( );
+					combo( "watermark", GET_VARIABLE( g_variables.m_watermark_mode, int ), watermark_modes.data( ),
+					       watermark_modes.size( ) );
+					auto& menu_logo_modes = get_menu_logo_mode_labels( );
+					combo( "menu logo", GET_VARIABLE( g_variables.m_menu_logo_mode, int ), menu_logo_modes.data( ),
+					       menu_logo_modes.size( ) );
 					const char* watermark_accent_modes[] = { "use menu accent", "custom" };
 					combo( "watermark accent", GET_VARIABLE( g_variables.m_watermark_accent_mode, int ), watermark_accent_modes,
 					       IM_ARRAYSIZE( watermark_accent_modes ) );
@@ -2485,8 +2900,10 @@ void n_menu::impl_t::on_end_scene( )
 		if ( tab_number == 7 ) {
 			ImGui::SetCursorPos( ImVec2( 150.0f, 10.0f ) );
 			child( "lua", ImVec2( 230.0f, 410.0f ), []( ) {
-				const char* watermark_modes[] = { "off", "drainware", "clarity", "rgb / chroma" };
-				combo( "watermark", GET_VARIABLE( g_variables.m_watermark_mode, int ), watermark_modes, IM_ARRAYSIZE( watermark_modes ) );
+				auto& watermark_modes = get_watermark_mode_labels( );
+				combo( "watermark", GET_VARIABLE( g_variables.m_watermark_mode, int ), watermark_modes.data( ), watermark_modes.size( ) );
+				auto& menu_logo_modes = get_menu_logo_mode_labels( );
+				combo( "menu logo##lua", GET_VARIABLE( g_variables.m_menu_logo_mode, int ), menu_logo_modes.data( ), menu_logo_modes.size( ) );
 				const char* watermark_accent_modes[] = { "use menu accent", "custom" };
 				combo( "watermark accent##lua", GET_VARIABLE( g_variables.m_watermark_accent_mode, int ), watermark_accent_modes,
 				       IM_ARRAYSIZE( watermark_accent_modes ) );
@@ -2631,6 +3048,19 @@ void n_menu::impl_t::on_end_scene( )
 					ImGui::Text( "accent color" );
 					ImGui::ColorEdit4( "##theme accent", &GET_VARIABLE( g_variables.m_accent, c_color ), color_picker_alpha_flags );
 					inspector_info( "m_accent", "color", "stable", "none" );
+					checkbox( "accent / watermark gradient", &GET_VARIABLE( g_variables.m_theme_accent_gradient, bool ) );
+					{
+						theme_gradient_delegate_t gradient_delegate;
+						static int gradient_selection = -1;
+						ImGui::Text( "gradient editor" );
+						ImGradient::Edit( gradient_delegate, ImVec2( 210.f, 30.f ), gradient_selection );
+						ImGui::Text( "gradient start" );
+						ImGui::ColorEdit4( "##theme gradient start", &GET_VARIABLE( g_variables.m_theme_gradient_start, c_color ),
+						                   color_picker_alpha_flags );
+						ImGui::Text( "gradient end" );
+						ImGui::ColorEdit4( "##theme gradient end", &GET_VARIABLE( g_variables.m_theme_gradient_end, c_color ),
+						                   color_picker_alpha_flags );
+					}
 					slider_float( "background alpha", &GET_VARIABLE( g_variables.m_theme_background_alpha, float ), 0.25f, 1.f, "%.2f" );
 					slider_float( "border alpha", &GET_VARIABLE( g_variables.m_theme_border_alpha, float ), 0.f, 1.f, "%.2f" );
 					slider_float( "corner radius", &GET_VARIABLE( g_variables.m_theme_corner_radius, float ), 0.f, 12.f, "%.0f" );
@@ -2639,6 +3069,19 @@ void n_menu::impl_t::on_end_scene( )
 					slider_float( "menu scale", &GET_VARIABLE( g_variables.m_menu_scale, float ), 0.8f, 1.25f, "%.2fx" );
 					slider_float( "font scale", &GET_VARIABLE( g_variables.m_theme_font_scale, float ), 0.85f, 1.15f, "%.2fx" );
 					slider_float( "animation speed", &GET_VARIABLE( g_variables.m_ui_animation_speed, float ), 0.6f, 8.f, "%.1fx" );
+					const char* curve_presets[] = { "linear", "ease out", "ease in out", "spring-ish", "custom" };
+					const int previous_curve = GET_VARIABLE( g_variables.m_theme_curve_preset, int );
+					combo( "animation curve", GET_VARIABLE( g_variables.m_theme_curve_preset, int ), curve_presets, IM_ARRAYSIZE( curve_presets ),
+					       ImVec2( 210.f, 40.f ) );
+					if ( previous_curve != GET_VARIABLE( g_variables.m_theme_curve_preset, int ) &&
+					     GET_VARIABLE( g_variables.m_theme_curve_preset, int ) < 4 )
+						set_theme_curve_preset( GET_VARIABLE( g_variables.m_theme_curve_preset, int ) );
+					{
+						theme_curve_delegate_t curve_delegate;
+						ImGui::Text( "easing curve" );
+						ImCurveEdit::Edit( curve_delegate, ImVec2( 210.f, 72.f ), ImGui::GetID( "##theme_curve_edit" ) );
+					}
+					slider_float( "scrollbar size", &GET_VARIABLE( g_variables.m_theme_scrollbar_size, float ), 4.f, 16.f, "%.1f" );
 					slider_float( "glow strength", &GET_VARIABLE( g_variables.m_theme_glow_strength, float ), 0.f, 1.f, "%.2f" );
 				} );
 
@@ -2648,7 +3091,7 @@ void n_menu::impl_t::on_end_scene( )
 					const char* columns[] = { "auto", "1 column", "2 columns", "3 columns" };
 					combo( "layout", GET_VARIABLE( g_variables.m_theme_layout_mode, int ), layouts, IM_ARRAYSIZE( layouts ) );
 					combo( "columns", GET_VARIABLE( g_variables.m_theme_columns, int ), columns, IM_ARRAYSIZE( columns ) );
-					const char* presets[] = { "FakeDrain Lime", "Clarity Slim", "s0beit Classic", "Debug Dark", "Minimal" };
+					const char* presets[] = { "FakeDrain Lime", "Clarity Slim", "s0beit Classic", "Debug Dark", "Minimal", "Chroma" };
 					combo( "theme preset", GET_VARIABLE( g_variables.m_theme_preset, int ), presets, IM_ARRAYSIZE( presets ) );
 					if ( button( "apply theme preset", ImVec2( 210, 0 ) ) )
 						apply_theme_preset( GET_VARIABLE( g_variables.m_theme_preset, int ) );
@@ -2666,9 +3109,15 @@ void n_menu::impl_t::on_end_scene( )
 						GET_VARIABLE( g_variables.m_menu_scale, float ) = 1.f;
 						GET_VARIABLE( g_variables.m_theme_font_scale, float ) = 1.f;
 						GET_VARIABLE( g_variables.m_ui_animation_speed, float ) = 2.5f;
+						GET_VARIABLE( g_variables.m_theme_scrollbar_size, float ) = 8.f;
 						GET_VARIABLE( g_variables.m_theme_glow_strength, float ) = 0.35f;
 						GET_VARIABLE( g_variables.m_theme_layout_mode, int ) = 0;
 						GET_VARIABLE( g_variables.m_theme_columns, int ) = 0;
+						GET_VARIABLE( g_variables.m_theme_accent_gradient, bool ) = false;
+						GET_VARIABLE( g_variables.m_theme_gradient_start, c_color ) = c_color( 174, 255, 0, 255 );
+						GET_VARIABLE( g_variables.m_theme_gradient_end, c_color ) = c_color( 70, 180, 255, 255 );
+						GET_VARIABLE( g_variables.m_theme_curve_preset, int ) = 1;
+						set_theme_curve_preset( 1 );
 					}
 				} );
 			}
@@ -2695,6 +3144,17 @@ void n_menu::impl_t::on_end_scene( )
 						g_misc.clear_debug_log( );
 					if ( button( "revalidate particles", ImVec2( 210, 0 ) ) )
 						g_misc.request_particle_debug_test( 3 );
+					ImGui::Spacing( );
+					if ( ImGui::SmallButton( "???" ) )
+						ImGui::OpenPopup( "forbidden_archive_popup" );
+					if ( ImGui::BeginPopupModal( "forbidden_archive_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize ) ) {
+						ImGui::TextWrapped( "forbidden archive corrupted: go practice jumpbugs instead" );
+						ImGui::Separator( );
+						ImGui::TextWrapped( "fumo.exe says: no cursed payloads found, only skill issue logs." );
+						if ( button( "close", ImVec2( 180, 0 ) ) )
+							ImGui::CloseCurrentPopup( );
+						ImGui::EndPopup( );
+					}
 				} );
 
 				ImGui::SetCursorPos( ImVec2( 390.0f, 10.0f ) );

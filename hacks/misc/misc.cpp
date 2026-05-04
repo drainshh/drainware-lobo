@@ -1,9 +1,15 @@
-﻿#include "misc.h"
+#include "misc.h"
 #include "../../game/sdk/includes/includes.h"
 #include "../../globals/branding/branding.h"
 #include "../../globals/includes/includes.h"
 #include "../../globals/logger/logger.h"
 #include "../../resources/embedded/watermark_assets.h"
+#ifndef LOBO_USE_IMPLOT
+#define LOBO_USE_IMPLOT 1
+#endif
+#if LOBO_USE_IMPLOT
+#include "../../third_party/implot/implot.h"
+#endif
 #include "../auto_wall/auto_wall.h"
 #include "../avatar_cache/avatar_cache.h"
 #include "../entity_cache/entity_cache.h"
@@ -138,6 +144,33 @@ namespace
 			return "\x02";
 
 		return "\x01";
+	}
+
+	std::string styled_metric_text( const char* label, const std::string& value, int style )
+	{
+		switch ( std::clamp( style, 0, 3 ) ) {
+		case 1:
+			return std::string( label ) + "  " + value;
+		case 2:
+			return std::string( label ) + " | " + value;
+		case 3:
+			return std::string( label ) + " -> " + value;
+		default:
+			return std::string( label ) + ": " + value;
+		}
+	}
+
+	const char* bhop_direction_label( float delta_deg )
+	{
+		delta_deg = std::remainder( delta_deg, 360.f );
+		const float a = std::fabs( delta_deg );
+		if ( a < 35.f )
+			return "forward";
+		if ( a > 145.f )
+			return "backwards";
+		if ( delta_deg > 0.f )
+			return "sideways right";
+		return "sideways left";
 	}
 
 	void movement_print( const char* event_name, bool respect_master = true )
@@ -1298,21 +1331,30 @@ void RenderWatermark( )
 {
 	static IDirect3DTexture9* clarity_texture = nullptr;
 	static IDirect3DTexture9* fake_drain_texture = nullptr;
+	static std::vector< IDirect3DTexture9* > extra_watermark_textures;
 	static bool tried_textures = false;
 	static float frame_rate = 0.f;
 	static float last_fps_update = 0.f;
-	static float animated_width[ 4 ]{ };
-	static float animated_alpha[ 4 ]{ };
+	static std::array< float, 24 > animated_width{ };
+	static std::array< float, 24 > animated_alpha{ };
 
 	if ( !tried_textures && g_interfaces.m_direct_device ) {
 		D3DXCreateTextureFromFileInMemory( g_interfaces.m_direct_device, n_embedded_assets::g_clarity_watermark_png,
 		                                   static_cast< UINT >( n_embedded_assets::g_clarity_watermark_png_size ), &clarity_texture );
 		D3DXCreateTextureFromFileInMemory( g_interfaces.m_direct_device, n_embedded_assets::g_fake_drain_watermark_png,
 		                                   static_cast< UINT >( n_embedded_assets::g_fake_drain_watermark_png_size ), &fake_drain_texture );
+		extra_watermark_textures.assign( n_embedded_assets::g_extra_watermark_assets_count, nullptr );
+		for ( std::size_t i = 0; i < n_embedded_assets::g_extra_watermark_assets_count; ++i ) {
+			const auto& asset = n_embedded_assets::g_extra_watermark_assets[ i ];
+			if ( asset.data && asset.size > 0U )
+				D3DXCreateTextureFromFileInMemory( g_interfaces.m_direct_device, asset.data, static_cast< UINT >( asset.size ),
+				                                   &extra_watermark_textures[ i ] );
+		}
 		tried_textures = true;
 	}
 
-	const int mode = std::clamp( GET_VARIABLE( g_variables.m_watermark_mode, int ), 0, 3 );
+	const int watermark_mode_max = static_cast< int >( 3 + n_embedded_assets::g_extra_watermark_assets_count );
+	const int mode = std::clamp( GET_VARIABLE( g_variables.m_watermark_mode, int ), 0, watermark_mode_max );
 	if ( mode == 0 )
 		return;
 
@@ -1337,7 +1379,14 @@ void RenderWatermark( )
 	if ( nick_label.size( ) > 18U )
 		nick_label = nick_label.substr( 0U, 18U );
 
-	const std::string label = mode == 2 ? "clarity" : mode == 3 ? "chroma" : n_branding::k_client_name;
+	const bool extra_mode = mode >= 4;
+	const int extra_index = mode - 4;
+	const std::string label = mode == 2   ? "clarity"
+	                          : mode == 3 ? "chroma"
+	                          : extra_mode && extra_index >= 0 &&
+	                                    extra_index < static_cast< int >( n_embedded_assets::g_extra_watermark_assets_count )
+	                              ? n_embedded_assets::g_extra_watermark_assets[ extra_index ].label
+	                              : n_branding::k_client_name;
 	const std::string sep = "|";
 	const std::string fps_number = std::to_string( static_cast< int >( frame_rate ) );
 	const std::string fps_label = " fps";
@@ -1345,10 +1394,20 @@ void RenderWatermark( )
 	if ( mode == 3 ) {
 		const float speed = std::clamp( GET_VARIABLE( g_variables.m_watermark_chroma_speed, float ), 0.15f, 4.f );
 		const float strength = std::clamp( GET_VARIABLE( g_variables.m_watermark_chroma_strength, float ), 0.f, 1.f );
-		const auto wave = [ & ]( float offset ) {
-			return static_cast< int >( 127.f + std::sin( now * speed * 1.6f + offset ) * 127.f * strength );
-		};
-		accent_cfg = c_color( wave( 0.f ), wave( 2.094f ), wave( 4.188f ), 255 );
+		if ( GET_VARIABLE( g_variables.m_theme_accent_gradient, bool ) ) {
+			const auto start = GET_VARIABLE( g_variables.m_theme_gradient_start, c_color );
+			const auto end = GET_VARIABLE( g_variables.m_theme_gradient_end, c_color );
+			const float t = 0.5f + 0.5f * std::sin( now * speed * 0.95f );
+			accent_cfg = c_color( static_cast< int >( std::lerp( static_cast< float >( start[ 0 ] ), static_cast< float >( end[ 0 ] ), t ) ),
+			                      static_cast< int >( std::lerp( static_cast< float >( start[ 1 ] ), static_cast< float >( end[ 1 ] ), t ) ),
+			                      static_cast< int >( std::lerp( static_cast< float >( start[ 2 ] ), static_cast< float >( end[ 2 ] ), t ) ),
+			                      255 );
+		} else {
+			const auto wave = [ & ]( float offset ) {
+				return static_cast< int >( 127.f + std::sin( now * speed * 1.6f + offset ) * 127.f * strength );
+			};
+			accent_cfg = c_color( wave( 0.f ), wave( 2.094f ), wave( 4.188f ), 255 );
+		}
 	}
 	const float background_alpha = std::clamp( GET_VARIABLE( g_variables.m_watermark_background_alpha, float ), 0.15f, 1.0f );
 	const float font_size = 12.f;
@@ -1363,7 +1422,7 @@ void RenderWatermark( )
 	                                             fps_number_size.x + 4.f + fps_label_size.x + 10.f );
 	const float height = 24.f;
 	const float ft = ImGui::GetIO( ).DeltaTime > 0.f ? ImGui::GetIO( ).DeltaTime : 0.016f;
-	const int index = std::clamp( mode, 0, 3 );
+	const int index = std::clamp< int >( mode, 0, static_cast< int >( animated_width.size( ) ) - 1 );
 	animated_width[ index ] =
 		std::lerp( animated_width[ index ] <= 0.f ? target_width : animated_width[ index ], target_width, std::clamp( ft * 10.f, 0.f, 1.f ) );
 	if ( animated_width[ index ] > target_width - 45.f )
@@ -1392,6 +1451,15 @@ void RenderWatermark( )
 			const float t0 = static_cast< float >( i ) / static_cast< float >( segments );
 			const float t1 = static_cast< float >( i + 1 ) / static_cast< float >( segments );
 			const auto col_at = [ & ]( float t ) {
+				if ( GET_VARIABLE( g_variables.m_theme_accent_gradient, bool ) ) {
+					const auto start = GET_VARIABLE( g_variables.m_theme_gradient_start, c_color );
+					const auto end = GET_VARIABLE( g_variables.m_theme_gradient_end, c_color );
+					const float phase = 0.5f + 0.5f * std::sin( now * speed * 0.95f + t * 6.283f );
+					return ImColor( static_cast< int >( std::lerp( static_cast< float >( start[ 0 ] ), static_cast< float >( end[ 0 ] ), phase ) ),
+					                static_cast< int >( std::lerp( static_cast< float >( start[ 1 ] ), static_cast< float >( end[ 1 ] ), phase ) ),
+					                static_cast< int >( std::lerp( static_cast< float >( start[ 2 ] ), static_cast< float >( end[ 2 ] ), phase ) ),
+					                static_cast< int >( 190.f * background_alpha ) );
+				}
 				return ImColor( static_cast< int >( 127.f + std::sin( now * speed * 1.7f + t * 6.283f ) * 127.f ),
 				                static_cast< int >( 127.f + std::sin( now * speed * 1.7f + t * 6.283f + 2.094f ) * 127.f ),
 				                static_cast< int >( 127.f + std::sin( now * speed * 1.7f + t * 6.283f + 4.188f ) * 127.f ),
@@ -1403,12 +1471,18 @@ void RenderWatermark( )
 	}
 
 	IDirect3DTexture9* bg_texture = mode == 2 ? clarity_texture : fake_drain_texture;
+	if ( extra_mode && extra_index >= 0 && extra_index < static_cast< int >( extra_watermark_textures.size( ) ) )
+		bg_texture = extra_watermark_textures[ extra_index ];
 	if ( bg_texture ) {
 		draw_list->PushClipRect( min, ImVec2( min.x + ( mode == 2 ? 70.f : 92.f ), max.y ), true );
 		if ( mode == 2 ) {
 			draw_list->AddImage( reinterpret_cast< ImTextureID >( bg_texture ), ImVec2( min.x - 18.f, min.y - 20.f ),
 			                     ImVec2( min.x + 44.f, min.y + 42.f ), ImVec2( 0.f, 0.f ), ImVec2( 1.f, 1.f ),
 			                     ImColor( accent_cfg[ 0 ], accent_cfg[ 1 ], accent_cfg[ 2 ], static_cast< int >( std::max( alpha - 196.f, 0.f ) ) ) );
+		} else if ( extra_mode ) {
+			draw_list->AddImage( reinterpret_cast< ImTextureID >( bg_texture ), ImVec2( min.x - 10.f, min.y - 18.f ),
+			                     ImVec2( min.x + 78.f, min.y + 48.f ), ImVec2( 0.f, 0.f ), ImVec2( 1.f, 1.f ),
+			                     ImColor( 255, 255, 255, static_cast< int >( std::max( alpha - 176.f, 0.f ) ) ) );
 		} else {
 			draw_list->AddImage( reinterpret_cast< ImTextureID >( bg_texture ), ImVec2( min.x - 22.f, min.y - 5.f ),
 			                     ImVec2( min.x + 102.f, min.y + 30.f ), ImVec2( 0.f, 0.f ), ImVec2( 1.f, 1.f ),
@@ -1459,8 +1533,24 @@ void n_misc::impl_t::draw_visual_cosmetics( )
 		c_vector direction{ };
 	};
 
+	struct velocity_graph_sample_t {
+		float speed = 0.f;
+		float vertical = 0.f;
+		float accel = 0.f;
+		float yaw_delta = 0.f;
+		float wish_dir = 0.f;
+		bool grounded = false;
+		bool jump_event = false;
+		bool land_event = false;
+		bool tech_event = false;
+		const char* marker = "";
+		const char* direction = "unknown";
+		float time = 0.f;
+	};
+
 	static std::deque< movement_sample_t > movement_samples;
 	static std::deque< float > graph_samples;
+	static std::deque< velocity_graph_sample_t > velocity_graph_samples;
 	static std::vector< roast_marker_t > roast_markers;
 	static std::vector< px_path_t > px_paths;
 	static std::vector< c_vector > px_active_points;
@@ -1479,6 +1569,7 @@ void n_misc::impl_t::draw_visual_cosmetics( )
 	static float old_edit_until = 0.f;
 	static float last_sample_time = 0.f;
 	static float last_graph_sample_time = 0.f;
+	static float last_velocity_graph_sample_time = 0.f;
 	static float last_tracer_time = 0.f;
 	static float last_footstep_time = 0.f;
 	static c_vector last_footstep_origin{ };
@@ -1513,6 +1604,13 @@ void n_misc::impl_t::draw_visual_cosmetics( )
 	static bool last_jb_key_active = false;
 	static bool last_speed_over_threshold = false;
 	static float last_speed = 0.f;
+	static float last_speed_for_graph = 0.f;
+	static const char* last_bhop_direction = "unknown";
+	static float last_direction_change_time = 0.f;
+	static float last_px_sound_time = 0.f;
+	static bool px_sound_active = false;
+	static float last_jump_stats_sound_time = 0.f;
+	static std::string last_jump_stats_line = "none";
 	static float last_pts_tick = 0.f;
 	static IDirect3DTexture9* fumo_texture = nullptr;
 	static bool tried_fumo_texture = false;
@@ -1750,6 +1848,68 @@ void n_misc::impl_t::draw_visual_cosmetics( )
 	const bool just_left_ground = last_grounded && !grounded;
 	const bool just_landed = !last_grounded && grounded;
 	const bool allow_movement_side_effects = !g_in_movement_assist_simulation;
+	const float view_yaw = g_ctx.m_cmd ? g_ctx.m_cmd->m_view_point.m_y : g_ctx.m_last_tick_yaw;
+	const c_vector velocity_now = g_ctx.m_local->get_velocity( );
+	float velocity_yaw = std::atan2( velocity_now.m_y, velocity_now.m_x ) * 57.295779513f;
+	if ( speed < 4.f )
+		velocity_yaw = view_yaw;
+	float yaw_delta = std::remainder( velocity_yaw - view_yaw, 360.f );
+	const char* direction_label = bhop_direction_label( yaw_delta );
+	if ( std::strcmp( direction_label, last_bhop_direction ) != 0 ) {
+		last_bhop_direction = direction_label;
+		last_direction_change_time = now;
+	}
+	const bool direction_transition = now - last_direction_change_time < 0.22f;
+	const float wish_dir = g_ctx.m_cmd ? std::atan2( -g_ctx.m_cmd->m_side_move, g_ctx.m_cmd->m_forward_move ) * 57.295779513f : 0.f;
+	const bool graph_jump_pressed = g_ctx.m_cmd && ( g_ctx.m_cmd->m_buttons & in_jump );
+	const bool graph_duck_pressed = g_ctx.m_cmd && ( g_ctx.m_cmd->m_buttons & in_duck );
+	const bool graph_lj_active = GET_VARIABLE( g_variables.m_long_jump, bool ) && g_input.check_input( &GET_VARIABLE( g_variables.m_long_jump_key, key_bind_t ) );
+	const bool graph_mj_active = GET_VARIABLE( g_variables.m_mini_jump, bool ) && g_input.check_input( &GET_VARIABLE( g_variables.m_mini_jump_key, key_bind_t ) );
+	const bool graph_pixelsurf_confirmed = g_movement.m_pixelsurf_data.m_in_pixel_surf;
+	const bool graph_edgebug_confirmed = g_movement.m_edgebug_data.m_will_edgebug && !g_movement.m_edgebug_data.m_will_fail;
+	const bool graph_jumpbug_confirmed = g_movement.m_jumpbug_data.m_can_jb;
+	const char* graph_marker = "";
+	if ( graph_jumpbug_confirmed && !last_jumpbug_state )
+		graph_marker = "JB";
+	else if ( graph_edgebug_confirmed && !last_edgebug_state )
+		graph_marker = "EB";
+	else if ( graph_pixelsurf_confirmed && !last_pixelsurf_state )
+		graph_marker = "PX";
+	else if ( just_left_ground && graph_jump_pressed ) {
+		if ( graph_lj_active )
+			graph_marker = "LJ";
+		else if ( graph_mj_active )
+			graph_marker = "MJ";
+		else if ( graph_duck_pressed )
+			graph_marker = "CJ";
+		else
+			graph_marker = "J";
+	} else if ( just_landed ) {
+		graph_marker = "L";
+	}
+
+	if ( now - last_velocity_graph_sample_time > 0.05f ) {
+		velocity_graph_sample_t sample{ };
+		sample.speed = speed;
+		sample.vertical = velocity_now.m_z;
+		sample.accel = speed - last_speed_for_graph;
+		sample.yaw_delta = yaw_delta;
+		sample.wish_dir = wish_dir;
+		sample.grounded = grounded;
+		sample.jump_event = just_left_ground;
+		sample.land_event = just_landed;
+		sample.tech_event = g_movement.m_pixelsurf_data.m_in_pixel_surf || g_movement.m_jumpbug_data.m_can_jb ||
+		                    ( g_movement.m_edgebug_data.m_will_edgebug && !g_movement.m_edgebug_data.m_will_fail );
+		sample.marker = graph_marker;
+		sample.direction = direction_transition ? "transition" : direction_label;
+		sample.time = now;
+		velocity_graph_samples.push_front( sample );
+		last_speed_for_graph = speed;
+		last_velocity_graph_sample_time = now;
+	}
+	const int max_graph_samples = std::clamp( GET_VARIABLE( g_variables.m_velocity_graph_samples, int ), 32, 220 );
+	while ( velocity_graph_samples.size( ) > static_cast< std::size_t >( max_graph_samples ) )
+		velocity_graph_samples.pop_back( );
 	if ( just_left_ground ) {
 		air_start_origin = g_ctx.m_local->get_abs_origin( );
 		air_start_time = now;
@@ -1944,6 +2104,7 @@ void n_misc::impl_t::draw_visual_cosmetics( )
 	}
 
 	const bool pixelsurf_state = g_movement.m_pixelsurf_data.m_in_pixel_surf || g_movement.m_pixelsurf_data.m_predicted_succesful;
+	const bool pixelsurf_confirmed = g_movement.m_pixelsurf_data.m_in_pixel_surf;
 	const bool edgebug_state = g_movement.m_edgebug_data.m_will_edgebug && !g_movement.m_edgebug_data.m_will_fail;
 	if ( pixelsurf_state && !last_pixelsurf_state && now - last_pixelsurf_score_time > 0.45f ) {
 		add_score_event( 125, 8, 0.44f );
@@ -2035,9 +2196,57 @@ void n_misc::impl_t::draw_visual_cosmetics( )
 	last_pixelsurf_state = pixelsurf_state;
 	last_edgebug_state = edgebug_state;
 
+	if ( GET_VARIABLE( g_variables.m_px_sound_enable, bool ) ) {
+		const int px_sound_type = std::clamp( GET_VARIABLE( g_variables.m_px_sound_type, int ), 0, 2 );
+		const float retrigger = std::clamp( GET_VARIABLE( g_variables.m_px_sound_retrigger, float ), 0.05f, 1.0f );
+		const float min_v = std::clamp( GET_VARIABLE( g_variables.m_px_sound_vel_min, float ), 50.f, 600.f );
+		const float max_v = std::max( min_v + 1.f, std::clamp( GET_VARIABLE( g_variables.m_px_sound_vel_max, float ), 100.f, 800.f ) );
+		const float normalized = std::clamp( ( speed - min_v ) / ( max_v - min_v ), 0.f, 1.f );
+		const float pitch = std::lerp( std::clamp( GET_VARIABLE( g_variables.m_px_sound_pitch_min, float ), 0.5f, 2.0f ),
+		                               std::clamp( GET_VARIABLE( g_variables.m_px_sound_pitch_max, float ), 0.5f, 2.0f ), normalized );
+		const std::string sound_path = px_sound_type == 0 ? "weapons/revolver/revolver_prepare.wav" :
+		                               px_sound_type == 1 ? GET_VARIABLE( g_variables.m_px_sound_custom_path, std::string ) : "";
+		if ( g_in_movement_assist_simulation ) {
+			if ( GET_VARIABLE( g_variables.m_px_sound_debug, bool ) )
+				debug_log( "sound][px", "skipped reason=in_assist_simulation", true, 0.2f, "px_sim" );
+		} else if ( pixelsurf_confirmed && px_sound_type != 2 && !sound_path.empty( ) ) {
+			if ( !px_sound_active && now - last_px_sound_time > retrigger ) {
+				safe_play_ui_sound( sound_path, "pixelsurf", retrigger );
+				if ( GET_VARIABLE( g_variables.m_px_sound_debug, bool ) )
+					debug_log( "sound][px", "start velocity=" + std::to_string( static_cast< int >( speed ) ) + " pitch=" + std::to_string( pitch ),
+					           true, 0.08f, "px_start" );
+				px_sound_active = true;
+				last_px_sound_time = now;
+			} else if ( px_sound_active && now - last_px_sound_time > retrigger ) {
+				safe_play_ui_sound( sound_path, "pixelsurf", retrigger );
+				if ( GET_VARIABLE( g_variables.m_px_sound_debug, bool ) )
+					debug_log( "sound][px", "retrigger velocity=" + std::to_string( static_cast< int >( speed ) ) + " pitch=" + std::to_string( pitch ),
+					           true, 0.08f, "px_retrigger" );
+				last_px_sound_time = now;
+			}
+		} else if ( px_sound_active ) {
+			px_sound_active = false;
+			if ( GET_VARIABLE( g_variables.m_px_sound_debug, bool ) )
+				debug_log( "sound][px", "fade_out reason=px_end", true, 0.1f, "px_end" );
+		}
+	} else {
+		px_sound_active = false;
+	}
+
 	if ( just_landed && !air_start_origin.is_zero( ) ) {
 		const float airtime = now - air_start_time;
 		const float distance = g_ctx.m_local->get_abs_origin( ).dist_to_2d( air_start_origin );
+		const float landing_speed = speed;
+		const float speed_gain = landing_speed - std::max( 0.f, air_peak_speed );
+		int strafes_count = 0;
+		for ( std::size_t i = 0U; i + 1U < velocity_graph_samples.size( ); ++i ) {
+			if ( velocity_graph_samples[ i ].time < air_start_time )
+				break;
+			const float cur_wish = velocity_graph_samples[ i ].wish_dir;
+			const float next_wish = velocity_graph_samples[ i + 1U ].wish_dir;
+			if ( std::fabs( std::remainder( cur_wish - next_wish, 360.f ) ) > 20.f )
+				++strafes_count;
+		}
 		const bool made_longjump = airtime > 0.28f && distance >= 235.f && air_peak_speed >= 230.f;
 		if ( !made_longjump && airtime > 0.20f && distance > 48.f ) {
 			const int loss = std::clamp( 6 + static_cast< int >( ( 235.f - std::min( distance, 235.f ) ) * 0.035f ), 6, 14 );
@@ -2045,6 +2254,31 @@ void n_misc::impl_t::draw_visual_cosmetics( )
 		} else if ( made_longjump ) {
 			add_score_event( 55 + static_cast< int >( std::min( 70.f, ( distance - 235.f ) * 0.35f ) ), 3, 0.28f );
 			add_run_event( "LJ", false );
+		}
+		if ( GET_VARIABLE( g_variables.m_jump_stats_enable, bool ) && allow_movement_side_effects ) {
+			const char* jump_type = g_movement.m_pixelsurf_data.m_in_pixel_surf ? "PX" :
+			                        g_movement.m_jumpbug_data.m_can_jb ? "JB" :
+			                        lj_active ? "LJ" : mj_active ? "MJ" : duck_pressed ? "CJ" : "J";
+			std::ostringstream stats;
+			stats << jump_type << " pre=" << static_cast< int >( std::max( 0.f, air_peak_speed ) )
+			      << " land=" << static_cast< int >( landing_speed )
+			      << " gain=" << static_cast< int >( speed_gain )
+			      << " dist=" << static_cast< int >( distance )
+			      << " air=" << std::fixed << std::setprecision( 2 ) << airtime
+			      << " strafes=" << strafes_count;
+			last_jump_stats_line = stats.str( );
+			if ( GET_VARIABLE( g_variables.m_jump_stats_chat, bool ) )
+				movement_print( last_jump_stats_line.c_str( ), false );
+			if ( GET_VARIABLE( g_variables.m_jump_stats_debug_log, bool ) )
+				debug_log( "jump_stats", last_jump_stats_line, true, 0.05f, "jump_stats" );
+			if ( GET_VARIABLE( g_variables.m_jump_stats_play_sound, bool ) &&
+			     landing_speed >= std::clamp( GET_VARIABLE( g_variables.m_jump_stats_sound_threshold, float ), 100.f, 450.f ) &&
+			     now - last_jump_stats_sound_time >
+			         std::clamp( GET_VARIABLE( g_variables.m_jump_stats_sound_cooldown, float ), 0.1f, 3.0f ) ) {
+				const auto sound_path = GET_VARIABLE( g_variables.m_jump_stats_sound_path, std::string );
+				if ( !sound_path.empty( ) && safe_play_ui_sound( sound_path, "jump_stats", 0.12f ) )
+					last_jump_stats_sound_time = now;
+			}
 		}
 		air_start_origin = c_vector{ };
 	}
@@ -2461,28 +2695,270 @@ void n_misc::impl_t::draw_visual_cosmetics( )
 	}
 
 	if ( GET_VARIABLE( g_variables.m_velocity_graph, bool ) ) {
-		const ImVec2 graph_pos( 22.f, height - 124.f );
-		const ImVec2 graph_size( 210.f, 58.f );
-		const ImVec2 graph_max( graph_pos.x + graph_size.x, graph_pos.y + graph_size.y );
-		draw->AddRectFilled( graph_pos, graph_max, ImColor( 9, 9, 11, 160 ), 6.f );
-		draw->AddRect( graph_pos, graph_max, ImColor( 38, 38, 40, 145 ), 6.f );
+		if ( GET_VARIABLE( g_variables.m_velocity_graph_reset, bool ) ) {
+			velocity_graph_samples.clear( );
+			GET_VARIABLE( g_variables.m_velocity_graph_reset, bool ) = false;
+		}
+		const ImVec2 graph_pos( static_cast< float >( GET_VARIABLE( g_variables.m_velocity_graph_x, int ) ),
+		                        static_cast< float >( GET_VARIABLE( g_variables.m_velocity_graph_y, int ) ) );
+		const ImVec2 graph_size( static_cast< float >( std::clamp( GET_VARIABLE( g_variables.m_velocity_graph_w, int ), 140, 640 ) ),
+		                         static_cast< float >( std::clamp( GET_VARIABLE( g_variables.m_velocity_graph_h, int ), 56, 260 ) ) );
+		const bool compact = GET_VARIABLE( g_variables.m_velocity_graph_compact, bool );
+		const auto graph_col_cfg = GET_VARIABLE( g_variables.m_velocity_graph_use_accent, bool ) ?
+		                           GET_VARIABLE( g_variables.m_accent, c_color ) :
+		                           GET_VARIABLE( g_variables.m_velocity_graph_color, c_color );
+#if LOBO_USE_IMPLOT
+		static std::vector< double > graph_x;
+		static std::vector< double > speed_values;
+		static std::vector< double > accel_values;
+		static std::vector< double > vertical_values;
+		static std::vector< double > marker_x;
+		static std::vector< std::string > marker_labels;
+		static std::vector< double > direction_x;
+		static std::vector< std::string > direction_labels;
+		static std::vector< ImU32 > speed_line_colors;
 
-		if ( graph_samples.size( ) > 2U ) {
-			const float step = graph_size.x / 85.f;
-			for ( std::size_t i = 0U; i + 1U < graph_samples.size( ); ++i ) {
-				const float cur = std::clamp( graph_samples[ i ], 0.f, 520.f );
-				const float next = std::clamp( graph_samples[ i + 1U ], 0.f, 520.f );
-				const float x0 = graph_pos.x + graph_size.x - static_cast< float >( i ) * step - 8.f;
-				const float x1 = graph_pos.x + graph_size.x - static_cast< float >( i + 1U ) * step - 8.f;
-				const float y0 = graph_pos.y + graph_size.y - 8.f - ( cur / 520.f ) * ( graph_size.y - 18.f );
-				const float y1 = graph_pos.y + graph_size.y - 8.f - ( next / 520.f ) * ( graph_size.y - 18.f );
-				const float alpha = std::clamp( 1.f - ( static_cast< float >( i ) / 86.f ), 0.22f, 0.92f );
-				draw->AddLine( ImVec2( x0, y0 ), ImVec2( x1, y1 ), ImColor( accent.Value.x, accent.Value.y, accent.Value.z, alpha ), 1.6f );
+		const int sample_count = static_cast< int >( velocity_graph_samples.size( ) );
+		graph_x.resize( sample_count );
+		speed_values.resize( sample_count );
+		accel_values.resize( sample_count );
+		vertical_values.resize( sample_count );
+		speed_line_colors.resize( sample_count );
+		marker_x.clear( );
+		marker_labels.clear( );
+		direction_x.clear( );
+		direction_labels.clear( );
+
+		float max_speed_value = 260.f;
+		for ( int i = 0; i < sample_count; ++i ) {
+			const auto& sample = velocity_graph_samples[ static_cast< std::size_t >( sample_count - 1 - i ) ];
+			max_speed_value = std::max( max_speed_value, sample.speed + 36.f );
+		}
+		max_speed_value = std::clamp( max_speed_value, 260.f, 720.f );
+
+		const auto graph_color = [ & ]( int alpha = 255 ) {
+			return ImVec4( graph_col_cfg[ 0 ] / 255.f, graph_col_cfg[ 1 ] / 255.f, graph_col_cfg[ 2 ] / 255.f,
+			               std::clamp( static_cast< float >( alpha ) / 255.f, 0.f, 1.f ) );
+		};
+		for ( int i = 0; i < sample_count; ++i ) {
+			const auto& sample = velocity_graph_samples[ static_cast< std::size_t >( sample_count - 1 - i ) ];
+			graph_x[ i ] = static_cast< double >( i );
+			speed_values[ i ] = std::clamp( sample.speed, 0.f, max_speed_value );
+			accel_values[ i ] = max_speed_value * 0.42 + std::clamp( sample.accel, -90.f, 90.f ) * 1.35;
+			vertical_values[ i ] = max_speed_value * 0.50 + std::clamp( sample.vertical, -320.f, 320.f ) / 320.0 * max_speed_value * 0.34;
+			const float age_alpha = std::clamp( 0.35f + 0.65f * ( static_cast< float >( i + 1 ) / static_cast< float >( std::max( sample_count, 1 ) ) ),
+			                                    0.2f, 1.f );
+			if ( GET_VARIABLE( g_variables.m_velocity_graph_show_gain_loss, bool ) ) {
+				const bool gain = sample.accel >= 0.f;
+				speed_line_colors[ i ] = gain ? ImColor( 130, 255, 146, static_cast< int >( 230.f * age_alpha ) )
+				                              : ImColor( 255, 96, 96, static_cast< int >( 220.f * age_alpha ) );
+			} else {
+				speed_line_colors[ i ] =
+					ImColor( graph_col_cfg[ 0 ], graph_col_cfg[ 1 ], graph_col_cfg[ 2 ], static_cast< int >( 230.f * age_alpha ) );
+			}
+
+			if ( GET_VARIABLE( g_variables.m_velocity_graph_show_tech_markers, bool ) && sample.marker && sample.marker[ 0 ] ) {
+				marker_x.push_back( graph_x[ i ] );
+				marker_labels.emplace_back( sample.marker );
+			}
+			if ( GET_VARIABLE( g_variables.m_velocity_graph_show_dir_labels, bool ) && i > 0 ) {
+				const auto& previous = velocity_graph_samples[ static_cast< std::size_t >( sample_count - i ) ];
+				if ( std::strcmp( sample.direction, previous.direction ) != 0 ) {
+					direction_x.push_back( graph_x[ i ] );
+					direction_labels.emplace_back( sample.direction );
+				}
 			}
 		}
+
+		ImGui::SetNextWindowPos( graph_pos, ImGuiCond_Always );
+		ImGui::SetNextWindowSize( graph_size, ImGuiCond_Always );
+		ImGui::SetNextWindowBgAlpha( compact ? 0.18f : 0.32f );
+		ImGuiWindowFlags graph_window_flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar;
+		if ( !g_menu.m_opened )
+			graph_window_flags |= ImGuiWindowFlags_NoInputs;
+		ImGui::Begin( "##velocity_graph_implot_window", nullptr, graph_window_flags );
 		ImGui::PushFont( fonts_for_gui::regular_11 );
-		draw->AddText( ImVec2( graph_pos.x + 8.f, graph_pos.y + 6.f ), ImColor( 210, 210, 210, 230 ), "velocity" );
+		const char* current_dir = velocity_graph_samples.empty( ) ? "unknown" : velocity_graph_samples.front( ).direction;
+		if ( compact )
+			ImGui::TextColored( graph_color( 235 ), "%d", static_cast< int >( speed ) );
+		else {
+			ImGui::TextColored( ImVec4( 0.82f, 0.82f, 0.84f, 0.95f ), "velocity / strafe" );
+			if ( GET_VARIABLE( g_variables.m_velocity_graph_show_dir_labels, bool ) ) {
+				ImGui::SameLine( );
+				ImGui::TextColored( graph_color( 230 ), "%s", current_dir );
+			}
+		}
 		ImGui::PopFont( );
+
+		const float plot_header = compact ? 0.f : 16.f;
+		ImPlotFlags plot_flags = ImPlotFlags_NoTitle | ImPlotFlags_NoLegend | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText;
+		if ( !g_menu.m_opened || compact )
+			plot_flags |= ImPlotFlags_NoInputs;
+		const ImPlotAxisFlags x_flags =
+			compact ? ImPlotAxisFlags_NoDecorations : ( ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoMenus );
+		const ImPlotAxisFlags y_flags =
+			compact ? ImPlotAxisFlags_NoDecorations : ( ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoMenus );
+
+		if ( ImPlot::BeginPlot( "##velocity_graph_implot", ImVec2( -1.f, graph_size.y - plot_header - 8.f ), plot_flags ) ) {
+			ImPlot::SetupAxes( nullptr, nullptr, x_flags, y_flags );
+			ImPlot::SetupAxesLimits( 0.0, static_cast< double >( std::max( sample_count - 1, 1 ) ), 0.0, static_cast< double >( max_speed_value ),
+			                         ImPlotCond_Always );
+
+			if ( sample_count > 1 && GET_VARIABLE( g_variables.m_velocity_graph_show_velocity, bool ) ) {
+				ImPlotSpec speed_spec;
+				speed_spec.LineColor = graph_color( 235 );
+				speed_spec.LineColors = speed_line_colors.empty( ) ? nullptr : speed_line_colors.data( );
+				speed_spec.LineWeight = compact ? 1.7f : 2.1f;
+				speed_spec.Flags = ImPlotItemFlags_NoLegend;
+				ImPlot::PlotLine( "speed", graph_x.data( ), speed_values.data( ), sample_count, speed_spec );
+			}
+			if ( sample_count > 1 && GET_VARIABLE( g_variables.m_velocity_graph_show_accel, bool ) ) {
+				ImPlotSpec accel_spec;
+				accel_spec.LineColor = ImVec4( 0.58f, 1.00f, 0.55f, compact ? 0.30f : 0.45f );
+				accel_spec.LineWeight = 1.0f;
+				accel_spec.Flags = ImPlotItemFlags_NoLegend;
+				ImPlot::PlotLine( "gain", graph_x.data( ), accel_values.data( ), sample_count, accel_spec );
+			}
+			if ( sample_count > 1 && GET_VARIABLE( g_variables.m_velocity_graph_show_vertical, bool ) ) {
+				ImPlotSpec vertical_spec;
+				vertical_spec.LineColor = ImVec4( 0.43f, 0.66f, 1.00f, compact ? 0.32f : 0.50f );
+				vertical_spec.LineWeight = 1.0f;
+				vertical_spec.Flags = ImPlotItemFlags_NoLegend;
+				ImPlot::PlotLine( "vertical", graph_x.data( ), vertical_values.data( ), sample_count, vertical_spec );
+			}
+			if ( !marker_x.empty( ) ) {
+				ImPlotSpec marker_spec;
+				marker_spec.LineColor = graph_color( 175 );
+				marker_spec.LineWeight = 1.0f;
+				marker_spec.Flags = ImPlotItemFlags_NoLegend;
+				ImPlot::PlotInfLines( "tech", marker_x.data( ), static_cast< int >( marker_x.size( ) ), marker_spec );
+
+				ImPlotSpec text_spec;
+				text_spec.LineColor = graph_color( 240 );
+				text_spec.Flags = ImPlotItemFlags_NoLegend;
+				for ( std::size_t i = 0; i < marker_x.size( ); ++i )
+					ImPlot::PlotText( marker_labels[ i ].c_str( ), marker_x[ i ], max_speed_value * 0.90, ImVec2( 0.f, -6.f ), text_spec );
+			}
+			if ( GET_VARIABLE( g_variables.m_velocity_graph_show_dir_labels, bool ) && !direction_x.empty( ) && !compact ) {
+				ImPlotSpec dir_spec;
+				dir_spec.LineColor = ImVec4( 0.82f, 0.82f, 0.84f, 0.72f );
+				dir_spec.Flags = ImPlotItemFlags_NoLegend;
+				for ( std::size_t i = 0; i < direction_x.size( ); ++i )
+					ImPlot::PlotText( direction_labels[ i ].c_str( ), direction_x[ i ], max_speed_value * 0.12, ImVec2( 3.f, 0.f ), dir_spec );
+			}
+			ImPlot::EndPlot( );
+		}
+		ImGui::End( );
+#else
+		const ImVec2 graph_max( graph_pos.x + graph_size.x, graph_pos.y + graph_size.y );
+		draw->AddRectFilled( graph_pos, graph_max, ImColor( 9, 9, 11, compact ? 140 : 185 ), 6.f );
+		draw->AddRect( graph_pos, graph_max, ImColor( graph_col_cfg[ 0 ], graph_col_cfg[ 1 ], graph_col_cfg[ 2 ], 105 ), 6.f );
+		draw->AddText( ImVec2( graph_pos.x + 8.f, graph_pos.y + 6.f ), ImColor( 210, 210, 210, 230 ), "velocity graph requires ImPlot" );
+#endif
+	}
+
+	if ( GET_VARIABLE( g_variables.m_keystrokes_overlay, bool ) ) {
+		struct key_state_t {
+			const char* label;
+			bool down;
+			float alpha;
+		};
+		static std::array< float, 16 > key_alpha{ };
+		const float dt_anim = std::clamp( frame_time * std::clamp( GET_VARIABLE( g_variables.m_keystrokes_anim_speed, float ), 1.f, 20.f ), 0.f, 1.f );
+		const float scale = std::clamp( GET_VARIABLE( g_variables.m_keystrokes_scale, float ), 0.65f, 2.f );
+		const float spacing = std::clamp( GET_VARIABLE( g_variables.m_keystrokes_spacing, float ), 0.f, 22.f );
+		const auto key_color_cfg = GET_VARIABLE( g_variables.m_keystrokes_use_accent, bool ) ? GET_VARIABLE( g_variables.m_accent, c_color ) :
+		                           GET_VARIABLE( g_variables.m_keystrokes_color, c_color );
+		const float bg_alpha = std::clamp( GET_VARIABLE( g_variables.m_keystrokes_bg_alpha, float ), 0.f, 1.f );
+		float x = static_cast< float >( GET_VARIABLE( g_variables.m_keystrokes_x, int ) );
+		float y = static_cast< float >( GET_VARIABLE( g_variables.m_keystrokes_y, int ) );
+		const float key_w = 30.f * scale;
+		const float key_h = 22.f * scale;
+		const float overlay_w = ( key_w + spacing ) * 3.f + key_w;
+		const float overlay_h = ( key_h + spacing ) * 4.f + key_h;
+		if ( GET_VARIABLE( g_variables.m_keystrokes_draggable, bool ) && g_menu.m_opened ) {
+			static bool dragging = false;
+			static ImVec2 drag_offset{ };
+			const ImVec2 min( x, y );
+			const ImVec2 max( x + overlay_w, y + overlay_h );
+			if ( ImGui::IsMouseHoveringRect( min, max ) && ImGui::IsMouseClicked( ImGuiMouseButton_Left ) ) {
+				dragging = true;
+				drag_offset = ImVec2( ImGui::GetMousePos( ).x - x, ImGui::GetMousePos( ).y - y );
+			}
+			if ( dragging ) {
+				if ( ImGui::IsMouseDown( ImGuiMouseButton_Left ) ) {
+					x = ImGui::GetMousePos( ).x - drag_offset.x;
+					y = ImGui::GetMousePos( ).y - drag_offset.y;
+					GET_VARIABLE( g_variables.m_keystrokes_x, int ) = std::clamp< int >( static_cast< int >( x ), 0, std::max( 0, static_cast< int >( g_ctx.m_width ) - 24 ) );
+					GET_VARIABLE( g_variables.m_keystrokes_y, int ) = std::clamp< int >( static_cast< int >( y ), 0, std::max( 0, static_cast< int >( g_ctx.m_height ) - 24 ) );
+				} else {
+					dragging = false;
+				}
+			}
+		}
+		const auto down = []( int vk ) { return ( GetAsyncKeyState( vk ) & 0x8000 ) != 0; };
+		std::vector< key_state_t > keys{
+			{ "W", down( 'W' ), 0.f }, { "A", down( 'A' ), 0.f }, { "S", down( 'S' ), 0.f }, { "D", down( 'D' ), 0.f },
+			{ "JUMP", down( VK_SPACE ), 0.f }, { "DUCK", down( VK_CONTROL ), 0.f }, { "WALK", down( VK_SHIFT ), 0.f },
+			{ "M1", down( VK_LBUTTON ), 0.f }, { "M2", down( VK_RBUTTON ), 0.f },
+			{ "LJ", GET_VARIABLE( g_variables.m_long_jump, bool ) && g_input.check_input( &GET_VARIABLE( g_variables.m_long_jump_key, key_bind_t ) ), 0.f },
+			{ "JB", GET_VARIABLE( g_variables.m_jump_bug, bool ) && g_input.check_input( &GET_VARIABLE( g_variables.m_jump_bug_key, key_bind_t ) ), 0.f },
+			{ "EB", GET_VARIABLE( g_variables.edge_bug, bool ) && g_input.check_input( &GET_VARIABLE( g_variables.edge_bug_key, key_bind_t ) ), 0.f },
+			{ "PX", GET_VARIABLE( g_variables.m_pixel_surf, bool ) && g_input.check_input( &GET_VARIABLE( g_variables.m_pixel_surf_key, key_bind_t ) ), 0.f },
+			{ "AST", GET_VARIABLE( g_variables.m_pixel_surf_assist, bool ) && g_input.check_input( &GET_VARIABLE( g_variables.m_pixel_surf_assist_key, key_bind_t ) ), 0.f },
+		};
+		const std::size_t mouse_first = 7U;
+		const std::size_t mouse_last = 9U;
+		const std::size_t bind_first = 9U;
+		const std::size_t bind_last = 13U;
+		if ( !GET_VARIABLE( g_variables.m_keystrokes_show_mouse, bool ) )
+			keys.erase( keys.begin( ) + std::min( mouse_first, keys.size( ) ), keys.begin( ) + std::min( mouse_last, keys.size( ) ) );
+		if ( !GET_VARIABLE( g_variables.m_keystrokes_show_movement_binds, bool ) )
+			keys.erase( keys.begin( ) + std::min( bind_first, keys.size( ) ), keys.begin( ) + std::min( bind_last, keys.size( ) ) );
+		if ( !GET_VARIABLE( g_variables.m_keystrokes_show_assist_binds, bool ) )
+			keys.erase( keys.begin( ) + std::min< std::size_t >( keys.size( ), bind_last ), keys.end( ) );
+		for ( std::size_t i = 0; i < keys.size( ) && i < key_alpha.size( ); ++i ) {
+			key_alpha[ i ] = std::lerp( key_alpha[ i ], keys[ i ].down ? 1.f : 0.f, dt_anim );
+			keys[ i ].alpha = key_alpha[ i ];
+		}
+
+		const std::array< ImVec2, 14 > pos{ ImVec2( key_w + spacing, 0.f ),
+		                                     ImVec2( 0.f, key_h + spacing ), ImVec2( key_w + spacing, key_h + spacing ),
+		                                     ImVec2( ( key_w + spacing ) * 2.f, key_h + spacing ),
+		                                     ImVec2( 0.f, ( key_h + spacing ) * 2.f ), ImVec2( key_w + spacing, ( key_h + spacing ) * 2.f ),
+		                                     ImVec2( ( key_w + spacing ) * 2.f, ( key_h + spacing ) * 2.f ),
+		                                     ImVec2( 0.f, ( key_h + spacing ) * 3.f ), ImVec2( key_w + spacing, ( key_h + spacing ) * 3.f ),
+		                                     ImVec2( 0.f, ( key_h + spacing ) * 4.f ), ImVec2( key_w + spacing, ( key_h + spacing ) * 4.f ),
+		                                     ImVec2( ( key_w + spacing ) * 2.f, ( key_h + spacing ) * 4.f ),
+		                                     ImVec2( ( key_w + spacing ) * 3.f, ( key_h + spacing ) * 4.f ),
+		                                     ImVec2( ( key_w + spacing ) * 4.f, ( key_h + spacing ) * 4.f ) };
+		for ( std::size_t i = 0; i < keys.size( ) && i < pos.size( ); ++i ) {
+			const ImVec2 bmin( x + pos[ i ].x, y + pos[ i ].y );
+			const ImVec2 bmax( bmin.x + key_w, bmin.y + key_h );
+			const float press = keys[ i ].alpha;
+			draw->AddRectFilled( bmin, bmax, ImColor( 10, 10, 10, static_cast< int >( 180.f * bg_alpha + press * 35.f ) ), 4.f );
+			draw->AddRect( bmin, bmax, ImColor( key_color_cfg[ 0 ], key_color_cfg[ 1 ], key_color_cfg[ 2 ], static_cast< int >( 55 + press * 170.f ) ),
+			               4.f );
+			const ImVec2 ts = fonts_for_gui::regular_11->CalcTextSizeA( 11.f * scale, FLT_MAX, 0.f, keys[ i ].label );
+			draw->AddText( fonts_for_gui::regular_11, 11.f * scale,
+			               ImVec2( bmin.x + ( key_w - ts.x ) * 0.5f, bmin.y + ( key_h - ts.y ) * 0.5f ),
+			               ImColor( 230, 230, 230, static_cast< int >( 180 + press * 70.f ) ), keys[ i ].label );
+		}
+	}
+
+	if ( GET_VARIABLE( g_variables.m_jump_stats_enable, bool ) && GET_VARIABLE( g_variables.m_jump_stats_panel, bool ) ) {
+		const ImVec2 pos( static_cast< float >( GET_VARIABLE( g_variables.m_jump_stats_x, int ) ),
+		                  static_cast< float >( GET_VARIABLE( g_variables.m_jump_stats_y, int ) ) );
+		const ImVec2 size( 280.f, 62.f );
+		const ImVec2 max( pos.x + size.x, pos.y + size.y );
+		const auto accent_jump = GET_VARIABLE( g_variables.m_accent, c_color );
+		draw->AddRectFilled( pos, max, ImColor( 8, 8, 10, 190 ), 6.f );
+		draw->AddRect( pos, max, ImColor( accent_jump[ 0 ], accent_jump[ 1 ], accent_jump[ 2 ], 110 ), 6.f );
+		draw->AddText( fonts_for_gui::regular_11, 11.f, ImVec2( pos.x + 8.f, pos.y + 7.f ), ImColor( 205, 205, 205, 235 ), "jump stats" );
+		draw->AddText( fonts_for_gui::regular_11, 11.f, ImVec2( pos.x + 8.f, pos.y + 26.f ), ImColor( 230, 230, 230, 230 ), last_jump_stats_line.c_str( ) );
+		draw->AddText( fonts_for_gui::regular_11, 11.f, ImVec2( pos.x + 8.f, pos.y + 44.f ),
+		               ImColor( 160, 160, 160, 220 ),
+		               styled_metric_text( "direction", last_bhop_direction, GET_VARIABLE( g_variables.m_jump_stats_label_style, int ) ).c_str( ) );
 	}
 
 	if ( GET_VARIABLE( g_variables.m_speedometer, bool ) ) {
@@ -3151,10 +3627,52 @@ void n_misc::impl_t::on_fire_event( ) {
 
 void n_misc::impl_t::practice_window_think( )
 {
-	if ( !GET_VARIABLE( g_variables.m_practice_window, bool ) )
+	const bool practice_window = GET_VARIABLE( g_variables.m_practice_window, bool );
+	const bool practice_mode = GET_VARIABLE( g_variables.m_practice_mode, bool );
+	if ( !practice_window && !practice_mode )
 		return;
 
-	if ( !g_convars[ HASH_BT( "sv_cheats" ) ]->get_bool( ) || g_interfaces.m_engine_client->is_console_visible( ) )
+	if ( !g_interfaces.m_engine_client || g_interfaces.m_engine_client->is_console_visible( ) )
+		return;
+
+	if ( practice_mode && GET_VARIABLE( g_variables.m_practice_apply_requested, bool ) ) {
+		GET_VARIABLE( g_variables.m_practice_apply_requested, bool ) = false;
+		std::vector< std::string > commands;
+		if ( GET_VARIABLE( g_variables.m_practice_basic_setup, bool ) ) {
+			commands.emplace_back( "sv_cheats 1" );
+			commands.emplace_back( "sv_infinite_ammo 1" );
+			commands.emplace_back( "mp_ignore_round_win_conditions 1" );
+			commands.emplace_back( "mp_roundtime_defuse 60" );
+			commands.emplace_back( "mp_roundtime 60" );
+			commands.emplace_back( "mp_freezetime 0" );
+			commands.emplace_back( "mp_buy_anywhere 1" );
+			commands.emplace_back( "mp_buytime 9999" );
+			commands.emplace_back( "ammo_grenade_limit_total 5" );
+			commands.emplace_back( "bot_kick" );
+		}
+		if ( GET_VARIABLE( g_variables.m_practice_disable_fall_damage, bool ) )
+			commands.emplace_back( "sv_falldamage_scale 0" );
+		if ( GET_VARIABLE( g_variables.m_practice_ignore_round_win, bool ) )
+			commands.emplace_back( "mp_ignore_round_win_conditions 1" );
+		if ( GET_VARIABLE( g_variables.m_practice_give_weapons, bool ) )
+			commands.emplace_back( "impulse 101" );
+		if ( GET_VARIABLE( g_variables.m_practice_restart_after_apply, bool ) )
+			commands.emplace_back( "mp_restartgame 1" );
+		const auto custom_commands = GET_VARIABLE( g_variables.m_practice_custom_commands, std::string );
+		if ( !custom_commands.empty( ) )
+			commands.emplace_back( custom_commands );
+		for ( const auto& command : commands )
+			g_interfaces.m_engine_client->client_cmd_unrestricted( command.c_str( ) );
+	}
+	if ( practice_mode && GET_VARIABLE( g_variables.m_practice_reset_requested, bool ) ) {
+		GET_VARIABLE( g_variables.m_practice_reset_requested, bool ) = false;
+		g_interfaces.m_engine_client->client_cmd_unrestricted( "sv_falldamage_scale 1; sv_infinite_ammo 0; mp_ignore_round_win_conditions 0; mp_buy_anywhere 0; mp_buytime 45" );
+	}
+
+	if ( !practice_window )
+		return;
+
+	if ( !g_convars[ HASH_BT( "sv_cheats" ) ]->get_bool( ) )
 		return;
 
 	const auto cp_key = GET_VARIABLE( g_variables.m_practice_cp_key, key_bind_t ).m_key;

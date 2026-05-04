@@ -1,0 +1,12 @@
+Third-party notices for drainware-lobo UI helpers
+
+ImPlot
+Source: https://github.com/epezent/implot
+License: MIT. Vendored files: implot.h, implot_internal.h, implot.cpp, implot_items.cpp. Demo file intentionally not compiled.
+
+ImGuizmo helper widgets
+Source: https://github.com/CedricGuillemet/ImGuizmo
+License: MIT. Vendored files: ImCurveEdit.h, ImCurveEdit.cpp, ImGradient.h, ImGradient.cpp, ImZoomSlider.h. Full 3D gizmo code and demo/example files are intentionally not compiled.
+
+imgui-node-editor
+Not vendored. It is only useful once a real node-based visual preset graph is implemented; current preset cards remain lighter and lower risk.

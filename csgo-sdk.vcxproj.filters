@@ -99,6 +99,10 @@
     <ClCompile Include="hooks\functions\inventory_changer_hooks.cpp" />
     <ClCompile Include="instalisation fonts\fonts2.cpp" />
     <ClCompile Include="globals\globals.cpp" />
+    <ClCompile Include="third_party\implot\implot.cpp" />
+    <ClCompile Include="third_party\implot\implot_items.cpp" />
+    <ClCompile Include="third_party\imgui_extra\ImCurveEdit.cpp" />
+    <ClCompile Include="third_party\imgui_extra\ImGradient.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="game\sdk\includes\includes.h" />
@@ -494,6 +498,11 @@
     <ClInclude Include="x86-windows-static-md\include\fmt\ranges.h" />
     <ClInclude Include="x86-windows-static-md\include\fmt\std.h" />
     <ClInclude Include="x86-windows-static-md\include\fmt\xchar.h" />
+    <ClInclude Include="third_party\implot\implot.h" />
+    <ClInclude Include="third_party\implot\implot_internal.h" />
+    <ClInclude Include="third_party\imgui_extra\ImCurveEdit.h" />
+    <ClInclude Include="third_party\imgui_extra\ImGradient.h" />
+    <ClInclude Include="third_party\imgui_extra\ImZoomSlider.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include=".clang-format" />
@@ -504,6 +513,9 @@
     <None Include="hacks\misc\scaleform\files\teamcount_score.js" />
     <None Include="hacks\misc\scaleform\files\weapon_select.js" />
     <None Include="hacks\misc\scaleform\files\health_and_ammo.js" />
+    <None Include="third_party\implot\LICENSE" />
+    <None Include="third_party\imgui_extra\LICENSE" />
+    <None Include="third_party\THIRD_PARTY_NOTICES.txt" />
   </ItemGroup>
   <ItemGroup>
     <Library Include="Freetype\dfreetype.lib" />

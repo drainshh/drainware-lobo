@@ -5,11 +5,13 @@
 #include "../../game/sdk/includes/includes.h"
 #include "../includes/includes.h"
 #include "../../instalisation fonts/fonts2.h"
+#include "../../third_party/implot/implot.h"
 
 void n_render::impl_t::on_end_scene( const std::function< void( ) >& function, IDirect3DDevice9* device )
 {
 	if ( !this->m_initialised ) {
 		ImGui::CreateContext( );
+		ImPlot::CreateContext( );
 		ImGui_ImplWin32_Init( g_input.m_window );
 		ImGui_ImplDX9_Init( device );
 
@@ -202,6 +204,7 @@ void n_render::impl_t::on_release( )
 
 	ImGui_ImplDX9_Shutdown( );
 	ImGui_ImplWin32_Shutdown( );
+	ImPlot::DestroyContext( );
 	ImGui::DestroyContext( );
 }
 
@@ -439,4 +442,3 @@ IDirect3DTexture9* n_render::impl_t::steam_image( CSteamID steam_id )
 
 	return created_texture;
 }
-

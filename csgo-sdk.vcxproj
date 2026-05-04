@@ -117,6 +117,10 @@
     <ClCompile Include="utilities\memory\memory.cpp" />
     <ClCompile Include="utilities\modules\modules.cpp" />
     <ClCompile Include="utilities\utilities.cpp" />
+    <ClCompile Include="third_party\implot\implot.cpp" />
+    <ClCompile Include="third_party\implot\implot_items.cpp" />
+    <ClCompile Include="third_party\imgui_extra\ImCurveEdit.cpp" />
+    <ClCompile Include="third_party\imgui_extra\ImGradient.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="dependencies\avatar_data\avatar_data.h" />
@@ -512,6 +516,11 @@
     <ClInclude Include="x86-windows-static-md\include\fmt\ranges.h" />
     <ClInclude Include="x86-windows-static-md\include\fmt\std.h" />
     <ClInclude Include="x86-windows-static-md\include\fmt\xchar.h" />
+    <ClInclude Include="third_party\implot\implot.h" />
+    <ClInclude Include="third_party\implot\implot_internal.h" />
+    <ClInclude Include="third_party\imgui_extra\ImCurveEdit.h" />
+    <ClInclude Include="third_party\imgui_extra\ImGradient.h" />
+    <ClInclude Include="third_party\imgui_extra\ImZoomSlider.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include=".clang-format" />
@@ -522,6 +531,9 @@
     <None Include="hacks\misc\scaleform\files\teamcount_score.js" />
     <None Include="hacks\misc\scaleform\files\weapon_select.js" />
     <None Include="utilities\console\console.inl" />
+    <None Include="third_party\implot\LICENSE" />
+    <None Include="third_party\imgui_extra\LICENSE" />
+    <None Include="third_party\THIRD_PARTY_NOTICES.txt" />
   </ItemGroup>
   <ItemGroup>
     <Library Include="Freetype\dfreetype.lib" Condition="'$(Configuration)'=='Debug'" />
@@ -607,7 +619,7 @@
     <ClCompile>
       <WarningLevel>TurnOffAllWarnings</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;_DEBUG;CSGOSDK_EXPORTS;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>LOBO_ENABLE_NODE_EDITOR=0;LOBO_USE_IMPLOT=1;WIN32;_DEBUG;CSGOSDK_EXPORTS;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
@@ -616,7 +628,7 @@
       <DisableSpecificWarnings>4244;4042</DisableSpecificWarnings>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
-      <AdditionalIncludeDirectories>$(SolutionDir)\dependencies;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)\third_party\imgui_extra;$(SolutionDir)\third_party\implot;$(SolutionDir)\dependencies\imgui;$(SolutionDir)\dependencies;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -631,7 +643,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>false</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;NDEBUG;CSGOSDK_EXPORTS;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>LOBO_ENABLE_NODE_EDITOR=0;LOBO_USE_IMPLOT=1;WIN32;NDEBUG;CSGOSDK_EXPORTS;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
@@ -641,7 +653,7 @@
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/utf-8
  %(AdditionalOptions)</AdditionalOptions>
-      <AdditionalIncludeDirectories>$(SolutionDir)\dependencies;$(SolutionDir)\include;$(SolutionDir)\Freetype;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)\third_party\imgui_extra;$(SolutionDir)\third_party\implot;$(SolutionDir)\dependencies\imgui;$(SolutionDir)\dependencies;$(SolutionDir)\include;$(SolutionDir)\Freetype;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -656,7 +668,7 @@
     <ClCompile>
       <WarningLevel>TurnOffAllWarnings</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_DEBUG;CSGOSDK_EXPORTS;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>LOBO_ENABLE_NODE_EDITOR=0;LOBO_USE_IMPLOT=1;_DEBUG;CSGOSDK_EXPORTS;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
@@ -665,7 +677,7 @@
       <DisableSpecificWarnings>4244;4042</DisableSpecificWarnings>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
-      <AdditionalIncludeDirectories>$(SolutionDir)\dependencies;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)\third_party\imgui_extra;$(SolutionDir)\third_party\implot;$(SolutionDir)\dependencies\imgui;$(SolutionDir)\dependencies;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -679,7 +691,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>NDEBUG;CSGOSDK_EXPORTS;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>LOBO_ENABLE_NODE_EDITOR=0;LOBO_USE_IMPLOT=1;NDEBUG;CSGOSDK_EXPORTS;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
@@ -688,7 +700,7 @@
       <DisableSpecificWarnings>4244;4042</DisableSpecificWarnings>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
-      <AdditionalIncludeDirectories>$(SolutionDir)\dependencies;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)\third_party\imgui_extra;$(SolutionDir)\third_party\implot;$(SolutionDir)\dependencies\imgui;$(SolutionDir)\dependencies;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>

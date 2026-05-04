@@ -96,3 +96,7 @@ Y:\src\utilities\input\input.cpp;Y:\src\intermediates\input.obj
 Y:\src\utilities\memory\memory.cpp;Y:\src\intermediates\memory.obj
 Y:\src\utilities\modules\modules.cpp;Y:\src\intermediates\modules.obj
 Y:\src\utilities\utilities.cpp;Y:\src\intermediates\utilities.obj
+Y:\src\third_party\implot\implot.cpp;Y:\src\intermediates\implot.obj
+Y:\src\third_party\implot\implot_items.cpp;Y:\src\intermediates\implot_items.obj
+Y:\src\third_party\imgui_extra\ImCurveEdit.cpp;Y:\src\intermediates\ImCurveEdit.obj
+Y:\src\third_party\imgui_extra\ImGradient.cpp;Y:\src\intermediates\ImGradient.obj
