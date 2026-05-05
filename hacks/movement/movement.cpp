@@ -1,8 +1,13 @@
 ﻿#include "movement.h"
 #include "../../game/sdk/includes/includes.h"
 #include "../../globals/includes/includes.h"
+#include "../../features/route_calc/route_calculator.hpp"
 #include "movement_assist_simulation.h"
 #include "../prediction/prediction.h"
+
+#include <cmath>
+#include <iomanip>
+#include <sstream>
 
 bool AlertJB                      = false;
 bool alert_mini_crouch_hop        = false;
@@ -142,10 +147,490 @@ struct points_check_t {
 	bool active            = true;
 	float radius           = 300.f; // Предполагается, что уже добавлено
 	float delta_strafe     = 0.5f;  // Новое поле для индивидуального delta_strafe
+	int assist_label_index = -1;
+	c_vector assist_normal{ };
+	float assist_confidence = 1.0f;
 	points_check_t( const c_vector& Pos = { }, const std::string& Map = "" ) : pos( Pos ), map( Map ) { }
 };
 std::vector< points_check_t > m_bounce_points_check{ };
 std::vector< points_check_t > m_points_check{ };
+
+route_calc::Vec3 to_route_vec3( const c_vector& value )
+{
+	return { value.m_x, value.m_y, value.m_z };
+}
+
+std::string routecalc_vector_string( const c_vector& value )
+{
+	std::ostringstream out;
+	out << '(' << std::fixed << std::setprecision( 2 ) << value.m_x << ',' << value.m_y << ',' << value.m_z << ')';
+	return out.str( );
+}
+
+std::string routecalc_angle_string( const c_angle& value )
+{
+	std::ostringstream out;
+	out << '(' << std::fixed << std::setprecision( 2 ) << value.m_x << ',' << value.m_y << ',' << value.m_z << ')';
+	return out.str( );
+}
+
+int find_scanline_point_index( const std::vector< c_vector >& points, const c_vector& position )
+{
+	for ( int i = 0; i < static_cast< int >( points.size( ) ); ++i ) {
+		if ( points[ i ] == position )
+			return i;
+	}
+	return -1;
+}
+
+int display_assist_point_index( const points_check_t& point, const int fallback_index )
+{
+	return point.assist_label_index >= 0 ? point.assist_label_index : fallback_index;
+}
+
+void draw_point_index_label( const c_vector_2d& screen_position, const int point_index, const float alpha = 1.0f, const char* prefix = "P" )
+{
+	text_draw_object_t text{ };
+	text.m_font = g_render.m_fonts[ e_font_names::font_name_verdana_bd_11 ];
+	text.m_position = c_vector_2d( screen_position.m_x + 12.0f, screen_position.m_y - 18.0f );
+	text.m_text = std::string( prefix ? prefix : "" ) + std::to_string( point_index + 1 );
+	text.m_color = c_color( 230, 255, 210, static_cast< int >( 255.0f * std::clamp( alpha, 0.0f, 1.0f ) ) ).get_u32( );
+	text.m_outline_color = c_color( 0, 0, 0, static_cast< int >( 220.0f * std::clamp( alpha, 0.0f, 1.0f ) ) ).get_u32( );
+	text.m_draw_flags = e_text_flags::text_flag_outline;
+	g_render.m_draw_data.emplace_back( e_draw_type::draw_type_text, std::make_any< text_draw_object_t >( text ) );
+}
+
+bool InCrosshair( float x, float y, float radius );
+
+const char* route_bind_name( const key_bind_t& bind )
+{
+	if ( bind.m_key <= 0 || bind.m_key >= IM_ARRAYSIZE( FILTERED_KEY_NAMES ) )
+		return "-";
+	return FILTERED_KEY_NAMES[ bind.m_key ];
+}
+
+bool route_action_pressed( key_bind_t& bind, bool& was_active )
+{
+	const bool active = g_input.check_input( &bind );
+	const bool pressed = active && !was_active;
+	was_active = active;
+	return pressed;
+}
+
+void draw_screen_text( const c_vector_2d& position, const std::string& value, const unsigned int color, ImFont* font = nullptr,
+                       const e_text_flags flags = e_text_flags::text_flag_outline )
+{
+	text_draw_object_t text{ };
+	text.m_font = font ? font : g_render.m_fonts[ e_font_names::font_name_verdana_bd_11 ];
+	text.m_position = position;
+	text.m_text = value;
+	text.m_color = color;
+	text.m_outline_color = c_color( 0, 0, 0, 230 ).get_u32( );
+	text.m_draw_flags = flags;
+	g_render.m_draw_data.emplace_back( e_draw_type::draw_type_text, std::make_any< text_draw_object_t >( text ) );
+}
+
+void draw_screen_rect( const c_vector_2d& min, const c_vector_2d& max, const unsigned int color, const bool filled, const float rounding = 3.0f,
+                       const float thickness = 1.0f )
+{
+	rect_draw_object_t rect{ };
+	rect.m_min = min;
+	rect.m_max = max;
+	rect.m_color = color;
+	rect.m_filled = filled;
+	rect.m_rounding = rounding;
+	rect.m_corner_rounding_flags = ImDrawFlags_RoundCornersAll;
+	rect.m_thickness = thickness;
+	g_render.m_draw_data.emplace_back( e_draw_type::draw_type_rect, std::make_any< rect_draw_object_t >( rect ) );
+}
+
+route_calc::RoutePoint make_route_point( const route_calc::PointType type, const c_vector& position, const c_vector& normal, const bool has_normal,
+                                         const char* source, const int source_assist_index = -1, const float confidence = 1.0f )
+{
+	route_calc::RoutePoint point{ };
+	point.type = type;
+	point.position = to_route_vec3( position );
+	point.normal = has_normal ? to_route_vec3( normal ) : route_calc::Vec3{ };
+	point.has_normal = has_normal;
+	point.source_pixel_assist_index = source_assist_index;
+	point.source = source ? source : ( type == route_calc::PointType::Floor ? "manual_floor" : "manual_pixelsurf" );
+	point.confidence = confidence;
+	point.distance = g_ctx.m_local ? g_ctx.m_local->get_origin( ).dist_to( position ) : -1.0f;
+	return point;
+}
+
+bool trace_floor_position( c_vector& out_position, c_vector& out_normal )
+{
+	if ( !g_ctx.m_local || !g_interfaces.m_engine_trace )
+		return false;
+
+	const c_vector origin = g_ctx.m_local->get_origin( );
+	ray_t ray( origin + c_vector( 0.0f, 0.0f, 8.0f ), origin - c_vector( 0.0f, 0.0f, 128.0f ) );
+	c_trace_filter filter( g_ctx.m_local );
+	trace_t trace{ };
+	g_interfaces.m_engine_trace->trace_ray( ray, mask_playersolid, &filter, &trace );
+	if ( trace.did_hit( ) ) {
+		out_position = trace.m_end;
+		out_normal = trace.m_plane.m_normal;
+		return true;
+	}
+
+	out_position = origin;
+	out_normal = c_vector( 0.0f, 0.0f, 1.0f );
+	return true;
+}
+
+bool trace_crosshair_point( c_vector& out_position, c_vector& out_normal, float* out_fraction = nullptr, float* out_distance = nullptr )
+{
+	if ( !g_ctx.m_local || !g_interfaces.m_engine_client || !g_interfaces.m_engine_trace )
+		return false;
+
+	c_angle view_angles{ };
+	g_interfaces.m_engine_client->get_view_angles( view_angles );
+	const c_vector view = c_vector( view_angles.m_x, view_angles.m_y, 0.0f );
+	const c_vector start = g_ctx.m_local->get_eye_position( );
+	const c_vector end = start + c_vector::fromAngle( view ) * 2000.0f;
+	ray_t ray( start, end );
+	c_trace_filter filter( g_ctx.m_local );
+	trace_t trace{ };
+	g_interfaces.m_engine_trace->trace_ray( ray, mask_playersolid, &filter, &trace );
+	if ( !trace.did_hit( ) )
+		return false;
+
+	out_position = trace.m_end;
+	out_normal = trace.m_plane.m_normal;
+	if ( out_fraction )
+		*out_fraction = trace.m_fraction;
+	if ( out_distance )
+		*out_distance = start.dist_to( trace.m_end );
+	return true;
+}
+
+bool routecalc_wallish_normal( const bool has_trace, const c_vector& normal )
+{
+	return has_trace && std::fabs( normal.m_z ) < 0.7f;
+}
+
+bool routecalc_floorish_normal( const bool has_trace, const c_vector& normal )
+{
+	return has_trace && std::fabs( normal.m_z ) > 0.7f;
+}
+
+const char* routecalc_state_guess( const bool on_ground, const bool jump, const bool duck, const int ticks_since_jump, const int ticks_since_duck,
+                                   const int ticks_since_unduck, const bool pixelsurf_contact, const bool has_trace, const c_vector& trace_normal,
+                                   const int candidate_id, const float candidate_distance, const float speed2d )
+{
+	const bool has_candidate = candidate_id >= 0 && candidate_distance >= 0.0f;
+	const bool wallish_trace = routecalc_wallish_normal( has_trace, trace_normal );
+	if ( routecalc_floorish_normal( has_trace, trace_normal ) && !has_candidate )
+		return "floor_trace_ignored";
+	if ( has_candidate && candidate_distance < 24.0f && !on_ground && speed2d > 5.0f )
+		return "pixelsurf_near_contact";
+	if ( has_candidate && candidate_distance < 96.0f )
+		return "candidate_near";
+	if ( has_candidate )
+		return "candidate_aimed";
+	if ( pixelsurf_contact && wallish_trace && speed2d > 5.0f )
+		return "wall_near_no_candidate";
+	if ( !has_candidate && wallish_trace )
+		return "wall_near_no_candidate";
+	if ( !has_candidate )
+		return "no_candidate";
+	if ( jump && duck && on_ground && ticks_since_duck == 0 )
+		return "longjump";
+	if ( jump && duck && on_ground && ticks_since_duck > 0 )
+		return "crouchjump";
+	if ( !duck && ticks_since_jump >= 0 && ticks_since_jump <= 3 && ticks_since_unduck >= 0 && ticks_since_unduck <= 3 )
+		return "minijump_risk";
+	if ( jump && on_ground )
+		return "standing_jump";
+	if ( !on_ground && duck && ticks_since_jump >= 0 && ticks_since_jump < 24 )
+		return "crouchjump";
+	return "none";
+}
+
+void calculate_routecalc_combos( )
+{
+	route_calc::AppendDebugLog( "routecalc", "calculate_combos_pressed" );
+	route_calc::CalculateSimpleCombos( std::max( 1, GET_VARIABLE( g_variables.m_routecalc_max_displayed_combos, int ) ),
+	                                   GET_VARIABLE( g_variables.m_routecalc_stop_at_max_displayed, bool ),
+	                                   GET_VARIABLE( g_variables.m_routecalc_strict_validation, bool ),
+	                                   GET_VARIABLE( g_variables.m_routecalc_max_render_distance, float ),
+	                                   GET_VARIABLE( g_variables.m_routecalc_manual_combo, std::string ),
+	                                   GET_VARIABLE( g_variables.m_routecalc_observed_map, std::string ),
+	                                   GET_VARIABLE( g_variables.m_routecalc_observed_area, std::string ) );
+}
+
+void handle_routecalc_actions( )
+{
+	if ( !GET_VARIABLE( g_variables.m_route_calculator, bool ) || !g_ctx.m_local || !g_interfaces.m_engine_client ||
+	     !g_interfaces.m_engine_client->is_in_game( ) || !g_ctx.m_local->is_alive( ) )
+		return;
+
+	static bool add_floor_active = false;
+	static bool add_pixelsurf_active = false;
+	static bool calculate_active = false;
+	static bool delete_active = false;
+	static bool clear_active = false;
+
+	if ( route_action_pressed( GET_VARIABLE( g_variables.m_routecalc_add_floor_key, key_bind_t ), add_floor_active ) ) {
+		c_vector position, normal;
+		if ( trace_floor_position( position, normal ) )
+			route_calc::AddRoutePoint( make_route_point( route_calc::PointType::Floor, position, normal, true, "manual_floor" ) );
+	}
+
+	if ( route_action_pressed( GET_VARIABLE( g_variables.m_routecalc_add_pixelsurf_key, key_bind_t ), add_pixelsurf_active ) ) {
+		if ( const auto* candidate = route_calc::GetAimedPixelSurfAssistCandidate( ) ) {
+			route_calc::RoutePoint point = *candidate;
+			point.source = "pixelsurf_assist_import";
+			point.type = route_calc::PointType::PixelSurf;
+			route_calc::AddRoutePoint( point );
+		} else {
+			c_vector position, normal;
+			if ( trace_crosshair_point( position, normal ) )
+				route_calc::AddRoutePoint( make_route_point( route_calc::PointType::PixelSurf, position, normal, true, "manual_pixelsurf", -1, 0.35f ) );
+		}
+	}
+
+	if ( route_action_pressed( GET_VARIABLE( g_variables.m_routecalc_calculate_key, key_bind_t ), calculate_active ) )
+		calculate_routecalc_combos( );
+
+	if ( route_action_pressed( GET_VARIABLE( g_variables.m_routecalc_delete_point_key, key_bind_t ), delete_active ) )
+		route_calc::DeleteSelectedOrLastRoutePoint( );
+
+	if ( route_action_pressed( GET_VARIABLE( g_variables.m_routecalc_clear_points_key, key_bind_t ), clear_active ) )
+		route_calc::ClearRoutePoints( );
+}
+
+void render_routecalc_point_world( )
+{
+	if ( !GET_VARIABLE( g_variables.m_route_calculator, bool ) || !GET_VARIABLE( g_variables.m_routecalc_show_points, bool ) || !g_ctx.m_local )
+		return;
+
+	const auto& points = route_calc::GetRoutePoints( );
+	const float max_distance = std::max( 64.0f, GET_VARIABLE( g_variables.m_routecalc_max_render_distance, float ) );
+	const c_vector player_origin = g_ctx.m_local->get_origin( );
+	const unsigned int accent = c_color( 174, 255, 0, 235 ).get_u32( );
+	const unsigned int dim = c_color( 180, 180, 180, 190 ).get_u32( );
+
+	for ( int i = 0; i < static_cast< int >( points.size( ) ); ++i ) {
+		const auto& point = points[ i ];
+		const c_vector position{ point.position.x, point.position.y, point.position.z };
+		const float distance = player_origin.dist_to( position );
+		if ( distance > max_distance )
+			continue;
+
+		c_vector_2d screen;
+		if ( !g_render.world_to_screen( position, screen ) )
+			continue;
+
+		const bool selected = route_calc::GetSelectedRoutePointIndex( ) == i;
+		if ( InCrosshair( screen.m_x, screen.m_y, 13.0f ) )
+			route_calc::SetSelectedRoutePointIndex( i );
+
+		const float radius = selected ? 8.0f : 6.0f;
+		g_render.m_draw_data.emplace_back( e_draw_type::draw_type_filled_circle,
+		                                   std::make_any< filled_circle_draw_object_t >( screen, radius, c_color( 0, 0, 0, 185 ).get_u32( ), 24 ) );
+		g_render.m_draw_data.emplace_back( e_draw_type::draw_type_circle,
+		                                   std::make_any< circle_draw_object_t >( screen, radius, selected ? accent : dim, 24, 1.25f ) );
+
+		const std::string id_text = std::to_string( point.id );
+		const ImVec2 id_size = g_render.m_fonts[ e_font_names::font_name_verdana_bd_11 ]->CalcTextSizeA(
+			g_render.m_fonts[ e_font_names::font_name_verdana_bd_11 ]->FontSize, FLT_MAX, 0.0f, id_text.c_str( ) );
+		draw_screen_text( c_vector_2d( screen.m_x - id_size.x * 0.5f, screen.m_y - id_size.y * 0.5f ), id_text,
+		                  selected ? accent : c_color( 235, 235, 235, 235 ).get_u32( ) );
+		draw_screen_text( c_vector_2d( screen.m_x + 10.0f, screen.m_y + 6.0f ), route_calc::ToString( point.type ), selected ? accent : dim );
+	}
+}
+
+void render_routecalc_helper_boxes( )
+{
+	if ( !GET_VARIABLE( g_variables.m_route_calculator, bool ) || !GET_VARIABLE( g_variables.m_routecalc_helper_boxes, bool ) || g_ctx.m_width <= 0 )
+		return;
+
+	const float x = static_cast< float >( g_ctx.m_width ) - 330.0f;
+	const float y = 88.0f;
+	const unsigned int bg = c_color( 0, 0, 0, 190 ).get_u32( );
+	const unsigned int outline = c_color( 45, 45, 45, 220 ).get_u32( );
+	const unsigned int text = c_color( 235, 235, 235, 235 ).get_u32( );
+	const unsigned int accent = c_color( 174, 255, 0, 235 ).get_u32( );
+
+	auto draw_box = [ & ]( const c_vector_2d& pos, const c_vector_2d& size, const char* title,
+	                       const std::vector< std::pair< std::string, std::string > >& rows ) {
+		draw_screen_rect( pos, pos + size, bg, true, 4.0f );
+		draw_screen_rect( pos, pos + size, outline, false, 4.0f );
+		draw_screen_text( c_vector_2d( pos.m_x + size.m_x * 0.5f - 38.0f, pos.m_y + 5.0f ), title, accent );
+		float row_y = pos.m_y + 22.0f;
+		for ( const auto& row : rows ) {
+			draw_screen_text( c_vector_2d( pos.m_x + 8.0f, row_y ), row.first, text );
+			draw_screen_text( c_vector_2d( pos.m_x + size.m_x - 34.0f, row_y ), row.second, text );
+			row_y += 14.0f;
+		}
+	};
+
+	draw_box( c_vector_2d( x, y ), c_vector_2d( 150.0f, 86.0f ), "route calculator",
+	          { { "add floor", route_bind_name( GET_VARIABLE( g_variables.m_routecalc_add_floor_key, key_bind_t ) ) },
+	            { "add pixelsurf", route_bind_name( GET_VARIABLE( g_variables.m_routecalc_add_pixelsurf_key, key_bind_t ) ) },
+	            { "calculate combos", route_bind_name( GET_VARIABLE( g_variables.m_routecalc_calculate_key, key_bind_t ) ) },
+	            { "delete point", route_bind_name( GET_VARIABLE( g_variables.m_routecalc_delete_point_key, key_bind_t ) ) },
+	            { "clear all points", route_bind_name( GET_VARIABLE( g_variables.m_routecalc_clear_points_key, key_bind_t ) ) } } );
+
+	draw_box( c_vector_2d( x + 158.0f, y ), c_vector_2d( 135.0f, 44.0f ), "pixel finder",
+	          { { "select point", route_bind_name( GET_VARIABLE( g_variables.m_pixel_surf_assist_point_key, key_bind_t ) ) } } );
+}
+
+void render_routecalc_combo_box( )
+{
+	if ( !GET_VARIABLE( g_variables.m_route_calculator, bool ) )
+		return;
+
+	const auto* primary = route_calc::GetPrimaryCombo( );
+	if ( !primary || g_ctx.m_width <= 0 || g_ctx.m_height <= 0 )
+		return;
+
+	const auto& combos = route_calc::GetComboResults( );
+	const float width = 520.0f;
+	const float height = 58.0f;
+	const float x = ( static_cast< float >( g_ctx.m_width ) - width ) * 0.5f;
+	const float y = static_cast< float >( g_ctx.m_height ) - 165.0f;
+	draw_screen_rect( c_vector_2d( x, y ), c_vector_2d( x + width, y + height ), c_color( 0, 0, 0, 210 ).get_u32( ), true, 4.0f );
+	draw_screen_rect( c_vector_2d( x, y ), c_vector_2d( x + width, y + height ), c_color( 45, 45, 45, 220 ).get_u32( ), false, 4.0f );
+	g_render.m_draw_data.emplace_back( e_draw_type::draw_type_line,
+	                                   std::make_any< line_draw_object_t >( c_vector_2d( x, y ), c_vector_2d( x + width, y ),
+	                                                                        c_color( 174, 255, 0, 245 ).get_u32( ), 2.0f ) );
+	draw_screen_text( c_vector_2d( x + width * 0.5f - 43.0f, y + 9.0f ), "route calculator", c_color( 235, 235, 235, 245 ).get_u32( ) );
+	draw_screen_text( c_vector_2d( x + 16.0f, y + 28.0f ), std::format( "{} [{}]", primary->text, route_calc::ToString( primary->status ) ),
+	                  c_color( 235, 235, 235, 245 ).get_u32( ) );
+	if ( combos.size( ) > 1U ) {
+		draw_screen_text( c_vector_2d( x + width * 0.5f - 34.0f, y + 43.0f ), std::format( "(and +{} more)", combos.size( ) - 1U ),
+		                  c_color( 205, 205, 205, 220 ).get_u32( ) );
+	}
+}
+
+void render_manual_pixelsurf_debug( )
+{
+	if ( !GET_VARIABLE( g_variables.m_routecalc_manual_pixelsurf_debug, bool ) || !g_ctx.m_local || !g_interfaces.m_engine_client ||
+	     !g_interfaces.m_engine_client->is_in_game( ) || !g_ctx.m_local->is_alive( ) )
+		return;
+
+	static int last_jump_tick = -1;
+	static int last_duck_tick = -1;
+	static int last_unduck_tick = -1;
+	static int last_logged_tick = -1;
+	static int last_logged_candidate = -2;
+	static bool last_logged_contact = false;
+	static std::string last_logged_state;
+	static bool previous_duck = false;
+	const int tick = g_interfaces.m_global_vars_base ? g_interfaces.m_global_vars_base->m_tick_count : 0;
+	const int buttons = g_ctx.m_cmd ? g_ctx.m_cmd->m_buttons : 0;
+	const bool jump = ( buttons & in_jump ) != 0;
+	const bool duck = ( buttons & in_duck ) != 0;
+	if ( jump )
+		last_jump_tick = tick;
+	if ( duck && !previous_duck )
+		last_duck_tick = tick;
+	if ( !duck && previous_duck )
+		last_unduck_tick = tick;
+	previous_duck = duck;
+
+	c_vector trace_position, trace_normal;
+	float trace_fraction = -1.0f;
+	float trace_distance = -1.0f;
+	const bool has_trace = trace_crosshair_point( trace_position, trace_normal, &trace_fraction, &trace_distance );
+	const auto origin = g_ctx.m_local->get_origin( );
+	const auto velocity = g_ctx.m_local->get_velocity( );
+	c_angle view_angles{ };
+	g_interfaces.m_engine_client->get_view_angles( view_angles );
+	const bool on_ground = ( g_ctx.m_local->get_flags( ) & e_flags::fl_onground ) != 0;
+	const float duck_amount = g_ctx.m_local->get_duck_amount( );
+	const bool ducking = duck_amount > 0.0f && duck_amount < 1.0f;
+	const bool ducked = duck_amount >= 0.99f;
+	const auto* candidate = route_calc::GetAimedPixelSurfAssistCandidate( );
+	const int candidate_id = candidate ? candidate->source_pixel_assist_index + 1 : -1;
+	float candidate_distance = -1.0f;
+	float candidate_height_delta = 0.0f;
+	float candidate_horizontal_delta = 0.0f;
+	if ( candidate ) {
+		const c_vector candidate_position{ candidate->position.x, candidate->position.y, candidate->position.z };
+		candidate_distance = origin.dist_to( candidate_position );
+		candidate_height_delta = origin.m_z - candidate_position.m_z;
+		candidate_horizontal_delta = origin.dist_to_2d( candidate_position );
+	}
+	const int ticks_since_jump = last_jump_tick >= 0 ? tick - last_jump_tick : -1;
+	const int ticks_since_duck = last_duck_tick >= 0 ? tick - last_duck_tick : -1;
+	const int ticks_since_unduck = last_unduck_tick >= 0 ? tick - last_unduck_tick : -1;
+	const bool pixelsurf_contact = g_movement.m_pixelsurf_data.m_in_pixel_surf;
+	const char* state_guess =
+		routecalc_state_guess( on_ground, jump, duck, ticks_since_jump, ticks_since_duck, ticks_since_unduck, pixelsurf_contact, has_trace, trace_normal,
+		                       candidate_id, candidate_distance, velocity.length_2d( ) );
+
+	const std::string state_signature = std::format( "{}:{}:{}", state_guess, candidate_id, pixelsurf_contact ? 1 : 0 );
+	if ( tick != last_logged_tick &&
+	     ( state_signature != last_logged_state || candidate_id != last_logged_candidate || pixelsurf_contact != last_logged_contact ||
+	       ( pixelsurf_contact && tick - last_logged_tick > 32 ) ) ) {
+		std::ostringstream log;
+		log << "source=paint_traverse tick=" << tick << " origin=" << routecalc_vector_string( origin ) << " vel=" << routecalc_vector_string( velocity )
+		    << " speed2d=" << std::fixed << std::setprecision( 2 ) << velocity.length_2d( ) << " flags=" << g_ctx.m_local->get_flags( )
+		    << " on_ground=" << ( on_ground ? 1 : 0 ) << " ducking=" << ( ducking ? 1 : 0 ) << " ducked=" << ( ducked ? 1 : 0 )
+		    << " duck_amount=" << duck_amount << " view=" << routecalc_angle_string( view_angles ) << " trace_fraction=" << trace_fraction
+		    << " plane_normal=" << ( has_trace ? routecalc_vector_string( trace_normal ) : "(none)" ) << " dist_to_wall=" << trace_distance
+		    << " candidate_id=" << candidate_id << " dist_to_candidate=" << candidate_distance
+		    << " height_delta=" << candidate_height_delta << " horizontal_delta=" << candidate_horizontal_delta
+		    << " last_jump_tick=" << last_jump_tick << " last_duck_tick=" << last_duck_tick << " ticks_since_jump=" << ticks_since_jump
+		    << " ticks_since_duck=" << ticks_since_duck << " state_guess=" << state_guess;
+		route_calc::AppendDebugLog( "pixelsurf_debug", log.str( ) );
+		last_logged_tick = tick;
+		last_logged_candidate = candidate_id;
+		last_logged_contact = pixelsurf_contact;
+		last_logged_state = state_signature;
+	}
+
+	const float x = 18.0f;
+	const float y = 150.0f;
+	const float width = 330.0f;
+	const float height = candidate ? 246.0f : 216.0f;
+	draw_screen_rect( c_vector_2d( x, y ), c_vector_2d( x + width, y + height ), c_color( 0, 0, 0, 185 ).get_u32( ), true, 4.0f );
+	draw_screen_rect( c_vector_2d( x, y ), c_vector_2d( x + width, y + height ), c_color( 45, 45, 45, 220 ).get_u32( ), false, 4.0f );
+	draw_screen_text( c_vector_2d( x + 10.0f, y + 8.0f ), "manual pixelsurf debug", c_color( 174, 255, 0, 245 ).get_u32( ) );
+	float row = y + 27.0f;
+	auto line = [ & ]( const std::string& text ) {
+		draw_screen_text( c_vector_2d( x + 10.0f, row ), text, c_color( 230, 230, 230, 235 ).get_u32( ) );
+		row += 13.0f;
+	};
+
+	line( std::format( "tick {} | speed {:.1f} | vz {:.2f}", tick, velocity.length_2d( ), velocity.m_z ) );
+	line( std::format( "origin {:.1f} {:.1f} {:.1f}", origin.m_x, origin.m_y, origin.m_z ) );
+	line( std::format( "velocity {:.1f} {:.1f} {:.1f}", velocity.m_x, velocity.m_y, velocity.m_z ) );
+	line( std::format( "flags {} | on_ground {} | duck {:.2f}", g_ctx.m_local->get_flags( ), on_ground ? "yes" : "no", duck_amount ) );
+	line( std::format( "ducking {} | ducked {}", ducking ? "yes" : "no", ducked ? "yes" : "no" ) );
+	line( std::format( "view {:.1f} {:.1f} {:.1f}", view_angles.m_x, view_angles.m_y, view_angles.m_z ) );
+	if ( g_ctx.m_cmd )
+		line( std::format( "move f {:.1f} s {:.1f} | jump {} duck {}", g_ctx.m_cmd->m_forward_move, g_ctx.m_cmd->m_side_move,
+		                   jump ? "yes" : "no", duck ? "yes" : "no" ) );
+	if ( has_trace )
+		line( std::format( "trace {:.2f} dist {:.1f} n {:.2f} {:.2f} {:.2f}", trace_fraction, trace_distance, trace_normal.m_x, trace_normal.m_y,
+		                   trace_normal.m_z ) );
+	else
+		line( "trace none" );
+	line( std::format( "raw px contact {} | state {}", pixelsurf_contact ? "yes" : "no", state_guess ) );
+	line( std::format( "last jump {} | duck {} | unduck {}", last_jump_tick, last_duck_tick, last_unduck_tick ) );
+	line( std::format( "since jump {} | duck {} | unduck {}", ticks_since_jump, ticks_since_duck, ticks_since_unduck ) );
+	if ( candidate ) {
+		line( std::format( "aim candidate P{} | dist {:.1f}", candidate->source_pixel_assist_index + 1, candidate_distance ) );
+		line( std::format( "candidate delta z {:.1f} | horizontal {:.1f}", candidate_height_delta, candidate_horizontal_delta ) );
+	} else {
+		line( "aim candidate none" );
+	}
+}
+
+void render_routecalc_runtime( )
+{
+	handle_routecalc_actions( );
+	render_routecalc_point_world( );
+	render_routecalc_helper_boxes( );
+	render_routecalc_combo_box( );
+	render_manual_pixelsurf_debug( );
+}
 
 bool point_menu_is_opened( )
 {
@@ -273,6 +758,7 @@ void RenderPoints( std::vector< points_check_t >& points, const c_vector& player
 			float targetScale     = isHovered ? 1.5f : 1.0f;
 			point.currentScale    = LerpFloat( point.currentScale, targetScale, dt * scaleSpeed );
 			float effectiveRadius = baseRadius * point.currentScale;
+			draw_point_index_label( screenPos, display_assist_point_index( point, static_cast< int >( i ) ), alphaMultiplier, "P" );
 
 			if ( isHovered ) {
 				if ( isEnterPressed( ) ) {
@@ -414,6 +900,7 @@ void RenderPoints( std::vector< points_check_t >& points, const c_vector& player
 				break;
 			}
 		}
+
 	}
 
 	// Рендеринг точек для bounce assist
@@ -546,6 +1033,7 @@ void n_movement::impl_t::on_paint_traverse( )
 			if ( g_ctx.m_local->is_alive( ) ) {
 				RenderPoints( m_points_check, g_ctx.m_local->get_origin( ), g_interfaces.m_engine_client->get_level_name_short( ) );
 			}
+	render_routecalc_runtime( );
 	can = false;
 }
 
@@ -1088,8 +1576,9 @@ struct AnimatedPoint {
 	float current_size       = 0.f;   // Текущий размер для рисования
 };
 std::vector< AnimatedPoint > animated_points;
-void UpdateAndRenderPoints( std::vector< c_vector >& Points )
+void UpdateAndRenderPoints( std::vector< c_vector >& Points, const c_vector& wall_normal )
 {
+	route_calc::ClearAimedPixelSurfAssistCandidate( );
 	float delta_time                   = ImGui::GetIO( ).DeltaTime; // Время между кадрами
 	const float appearance_duration    = 0.5f;                      // Длительность появления (в секундах)
 	const float disappearance_duration = 0.5f;                      // Длительность исчезновения (в секундах)
@@ -1180,11 +1669,32 @@ void UpdateAndRenderPoints( std::vector< c_vector >& Points )
 				e_draw_type::draw_type_circle,
 				std::make_any< circle_draw_object_t >( screenPos, ap.current_size,
 			                                           c_color( 0, 255, 0, static_cast< int >( outline_alpha ) ).get_u32( ) ) );
+			const int scanline_index = find_scanline_point_index( Points, ap.position );
+			if ( GET_VARIABLE( g_variables.m_routecalc_show_assist_candidates, bool ) )
+				draw_point_index_label( screenPos, scanline_index >= 0 ? scanline_index : 0, ap.animation_progress, "P" );
+
+			if ( in_crosshair && GET_VARIABLE( g_variables.m_route_calculator, bool ) &&
+			     GET_VARIABLE( g_variables.m_routecalc_scanline, bool ) ) {
+				route_calc::RoutePoint candidate{ };
+				candidate.type = route_calc::PointType::PixelSurf;
+				candidate.position = to_route_vec3( ap.position );
+				candidate.normal = to_route_vec3( wall_normal );
+				candidate.has_normal = true;
+				candidate.source_pixel_assist_index = scanline_index;
+				candidate.source = "pixelsurf_assist_candidate";
+				candidate.confidence = 1.0f;
+				candidate.distance = g_ctx.m_local ? g_ctx.m_local->get_origin( ).dist_to( ap.position ) : -1.0f;
+				route_calc::SetAimedPixelSurfAssistCandidate( candidate );
+			}
 
 			// Обработка выбора точки (только одна за кадр)
 			if ( !point_selected && in_crosshair && g_input.check_input( &GET_VARIABLE( g_variables.m_pixel_surf_assist_point_key, key_bind_t ) ) ) {
 				if ( stop < GetTickCount64( ) ) {
-					m_points_check.emplace_back( ap.position, g_interfaces.m_engine_client->get_level_name_short( ) );
+					points_check_t imported_point{ ap.position, g_interfaces.m_engine_client->get_level_name_short( ) };
+					imported_point.assist_label_index = scanline_index >= 0 ? scanline_index : static_cast< int >( m_points_check.size( ) );
+					imported_point.assist_normal = wall_normal;
+					imported_point.assist_confidence = 1.0f;
+					m_points_check.emplace_back( imported_point );
 					g_movement.m_pixelsurf_assist_t.set_point = true;
 					Points.clear( ); // Очищаем Points, как в исходном коде
 					point_selected = true;
@@ -1829,7 +2339,7 @@ void n_movement::impl_t::pixel_finder( c_user_cmd* cmd )
 		}
 	} else {
 		// Отрисовка точек, когда cmd равен nullptr
-		UpdateAndRenderPoints( Points );
+		UpdateAndRenderPoints( Points, WallNormal );
 		UpdateAndRenderPoints2( Point_bounce );
 		// Отрисовка линии между StartPos и EndPos при зажатой клавише
 		if ( g_input.check_input( &GET_VARIABLE( g_variables.m_pixel_finder_key, key_bind_t ) ) ) {
@@ -3720,9 +4230,13 @@ void n_movement::impl_t::pixelsurf_assist( c_user_cmd* cmd )
 
 				g_interfaces.m_engine_trace->trace_ray( ray, mask_playersolid, &flt, &trace );
 
-				m_points_check.emplace_back(
+				points_check_t imported_point{
 					round_pos( c_vector( g_ctx.m_local->get_eye_position( ) + ( endPos - g_ctx.m_local->get_eye_position( ) ) * trace.m_fraction ) ),
-					g_interfaces.m_engine_client->get_level_name_short( ) );
+					g_interfaces.m_engine_client->get_level_name_short( ) };
+				imported_point.assist_label_index = static_cast< int >( m_points_check.size( ) );
+				imported_point.assist_normal = trace.m_plane.m_normal;
+				imported_point.assist_confidence = 1.0f;
+				m_points_check.emplace_back( imported_point );
 				myWindowDetect.AddWindow(
 					5, std::format( "point on: {}", round_pos( c_vector( g_ctx.m_local->get_eye_position( ) +
 				                                                         ( endPos - g_ctx.m_local->get_eye_position( ) ) * trace.m_fraction ) )

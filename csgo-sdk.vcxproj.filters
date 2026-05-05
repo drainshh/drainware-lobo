@@ -53,6 +53,7 @@
     <ClCompile Include="hacks\visuals\screen\screen.cpp" />
     <ClCompile Include="hacks\auto_wall\auto_wall.cpp" />
     <ClCompile Include="globals\media_player\media_player.cpp" />
+    <ClCompile Include="features\route_calc\route_calculator.cpp" />
     <ClCompile Include="resources\embedded\watermark_assets.cpp" />
     <ClCompile Include="hooks\functions\alloc_key_values_memory.cpp" />
     <ClCompile Include="hooks\functions\create_move_proxy.cpp" />
@@ -245,6 +246,7 @@
     <ClInclude Include="dependencies\json\json.hpp" />
     <ClInclude Include="dependencies\json\json_fwd.hpp" />
     <ClInclude Include="globals\config\variables.h" />
+    <ClInclude Include="features\route_calc\route_calculator.hpp" />
     <ClInclude Include="resources\embedded\watermark_assets.h" />
     <ClInclude Include="game\sdk\classes\c_game_types.h" />
     <ClInclude Include="game\sdk\classes\c_localize.h" />

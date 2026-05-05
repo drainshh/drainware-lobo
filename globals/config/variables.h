@@ -434,6 +434,24 @@ namespace n_variables
 		ADD_VARIABLE( key_bind_t, m_pixel_surf_assist_key, key_bind_t( 0, 1 ) );
 		ADD_VARIABLE( key_bind_t, m_pixel_surf_assist_point_key, key_bind_t( 0, 1 ) );
 		ADD_VARIABLE( key_bind_t, m_pixel_jump_point_key, key_bind_t( 0, 1 ) );
+		ADD_VARIABLE( bool, m_route_calculator, false );
+		ADD_VARIABLE( bool, m_routecalc_scanline, false );
+		ADD_VARIABLE( bool, m_routecalc_show_assist_candidates, true );
+		ADD_VARIABLE( bool, m_routecalc_show_points, true );
+		ADD_VARIABLE( bool, m_routecalc_stop_at_max_displayed, true );
+		ADD_VARIABLE( bool, m_routecalc_helper_boxes, true );
+		ADD_VARIABLE( bool, m_routecalc_manual_pixelsurf_debug, false );
+		ADD_VARIABLE( bool, m_routecalc_strict_validation, true );
+		ADD_VARIABLE( int, m_routecalc_max_displayed_combos, 4 );
+		ADD_VARIABLE( float, m_routecalc_max_render_distance, 1000.f );
+		ADD_VARIABLE( std::string, m_routecalc_manual_combo, "mj + j -> pixelsurf" );
+		ADD_VARIABLE( std::string, m_routecalc_observed_map, "de_nuke" );
+		ADD_VARIABLE( std::string, m_routecalc_observed_area, "window" );
+		ADD_VARIABLE( key_bind_t, m_routecalc_add_floor_key, key_bind_t( 0, 1 ) );
+		ADD_VARIABLE( key_bind_t, m_routecalc_add_pixelsurf_key, key_bind_t( 0, 1 ) );
+		ADD_VARIABLE( key_bind_t, m_routecalc_calculate_key, key_bind_t( 0, 1 ) );
+		ADD_VARIABLE( key_bind_t, m_routecalc_delete_point_key, key_bind_t( 0, 1 ) );
+		ADD_VARIABLE( key_bind_t, m_routecalc_clear_points_key, key_bind_t( 0, 1 ) );
 
 		ADD_VARIABLE( bool, m_bouncee_assist, false );
 		ADD_VARIABLE( bool, m_bouncee_assist_brokehop, false );

@@ -10,6 +10,7 @@
 #include "../movement/movement.h"
 #include "../movement/movement_assist_simulation.h"
 #include "../inventory/inventory_changer.h"
+#include "../../features/route_calc/route_calculator.hpp"
 #include "../../dependencies/imgui/imgui.h"
 #include "../inventory/items_manager.h"
 #include "../elements/tabs.hh"
@@ -1017,6 +1018,53 @@ namespace
 		return g_misc.restore_stable_snapshot( );
 	}
 
+	int route_tick_count( const route_calc::RouteCandidate& route )
+	{
+		return route.states.empty( ) ? 0 : route.states.back( ).tick;
+	}
+
+	std::string route_events_text( const route_calc::RouteCandidate& route )
+	{
+		if ( route.events.empty( ) )
+			return "none";
+
+		std::ostringstream stream;
+		for ( const auto& event : route.events )
+			stream << event.tick << ": " << route_calc::ToString( event.type ) << " - " << event.note << '\n';
+		return stream.str( );
+	}
+
+	std::string route_inputs_text( const route_calc::RouteCandidate& route )
+	{
+		if ( route.inputs.empty( ) )
+			return "none";
+
+		std::ostringstream stream;
+		for ( std::size_t i = 0; i < route.inputs.size( ); ++i )
+			stream << i << ": " << route_calc::ToString( route.inputs[ i ].action ) << '\n';
+		if ( route_tick_count( route ) > static_cast< int >( route.inputs.size( ) ) )
+			stream << route.inputs.size( ) << "+: none\n";
+		return stream.str( );
+	}
+
+	std::string route_point_label( const route_calc::RoutePoint& point, const int fallback_index )
+	{
+		std::ostringstream stream;
+		const int display_index = point.id > 0 ? point.id : fallback_index + 1;
+		stream << display_index << ". " << route_calc::ToString( point.type );
+		return stream.str( );
+	}
+
+	float route_point_distance_from_local( const route_calc::RoutePoint& point )
+	{
+		if ( g_ctx.m_local ) {
+			const c_vector position{ point.position.x, point.position.y, point.position.z };
+			return g_ctx.m_local->get_origin( ).dist_to( position );
+		}
+
+		return point.distance;
+	}
+
 	std::filesystem::path theme_snapshot_path( )
 	{
 		return g_config.m_path / "theme_snapshot.txt";
@@ -1159,6 +1207,7 @@ namespace
 		result( "particles / particle lab", 9, 1 );
 		result( "system health", 9, 0 );
 		result( "bind conflicts", 9, 2 );
+		result( "routecalc offline simulator", 10, 0 );
 		result( "edgebug status", 8, 0 );
 		result( "chat prints edgebugged", 2, 0 );
 		result( "edgebug particles", 3, 0 );
@@ -1338,7 +1387,8 @@ void n_menu::impl_t::on_end_scene( )
 			                          { "config", "G", { "general" } },
 			                          { "lua", "L", { "general" } },
 			                          { "session hub", "H", { "live", "presets", "theme" } },
-			                          { "debug", "J", { "health", "particles", "binds" } } };
+			                          { "debug", "J", { "health", "particles", "binds" } },
+			                          { "routecalc", "R", { "offline" } } };
 
 		if ( tab_number >= static_cast< int >( tabs.size( ) ) ) {
 			tab_number = 0;
@@ -3253,6 +3303,242 @@ void n_menu::impl_t::on_end_scene( )
 					ImGui::TextWrapped( "Ctrl+K opens the command palette. Search panic, particles, edgebug, watermark, world modulation, or config." );
 				} );
 			}
+		}
+
+		if ( tab_number == 10 ) {
+			static int tickrate_index = 0;
+			static int selected_route = 0;
+			static int selected_combo = 0;
+			static route_calc::Settings route_settings{ };
+			static std::vector< route_calc::RouteCandidate > routes;
+
+			auto run_route_simulation = []( route_calc::Settings& settings, std::vector< route_calc::RouteCandidate >& out_routes,
+			                                const int tickrate ) {
+				settings.tick_interval = tickrate == 1 ? 1.0f / 128.0f : 1.0f / 64.0f;
+				settings.gravity = 800.0f;
+				settings.ent_gravity = 1.0f;
+				settings.jump_impulse = 301.993377f;
+				settings.ground_factor = 1.0f;
+				settings.duck_origin_shift = 9.0f;
+				settings.in_air_unduck_origin_shift = -9.0f;
+				settings.duck_speed = 8.0f;
+				settings.duck_step_scale = 0.8f;
+				settings.ground_z = 0.0f;
+				settings.max_ticks = 96;
+				out_routes = route_calc::FindSimpleJumpRoutes( settings );
+			};
+
+			auto calculate_combos = []( ) {
+				route_calc::AppendDebugLog( "routecalc", "calculate_combos_pressed_menu" );
+				route_calc::CalculateSimpleCombos( std::max( 1, GET_VARIABLE( g_variables.m_routecalc_max_displayed_combos, int ) ),
+				                                   GET_VARIABLE( g_variables.m_routecalc_stop_at_max_displayed, bool ),
+				                                   GET_VARIABLE( g_variables.m_routecalc_strict_validation, bool ),
+				                                   GET_VARIABLE( g_variables.m_routecalc_max_render_distance, float ),
+				                                   GET_VARIABLE( g_variables.m_routecalc_manual_combo, std::string ),
+				                                   GET_VARIABLE( g_variables.m_routecalc_observed_map, std::string ),
+				                                   GET_VARIABLE( g_variables.m_routecalc_observed_area, std::string ) );
+			};
+
+			if ( routes.empty( ) )
+				run_route_simulation( route_settings, routes, tickrate_index );
+
+			if ( selected_route >= static_cast< int >( routes.size( ) ) )
+				selected_route = 0;
+
+			auto draw_route_point_details = []( const char* title, const route_calc::RoutePoint* point, const int fallback_index ) {
+				ImGui::TextWrapped( "%s", title );
+				if ( !point ) {
+					ImGui::TextWrapped( "none" );
+					return;
+				}
+
+				ImGui::TextWrapped( "%s", route_point_label( *point, fallback_index ).c_str( ) );
+				ImGui::TextWrapped( "position: %.2f %.2f %.2f", point->position.x, point->position.y, point->position.z );
+				if ( point->has_normal )
+					ImGui::TextWrapped( "normal: %.2f %.2f %.2f", point->normal.x, point->normal.y, point->normal.z );
+				else
+					ImGui::TextWrapped( "normal: unavailable" );
+				const float distance = route_point_distance_from_local( *point );
+				if ( distance >= 0.0f )
+					ImGui::TextWrapped( "distance: %.1f", distance );
+				else
+					ImGui::TextWrapped( "distance: unavailable" );
+				ImGui::TextWrapped( "source: %s", point->source.empty( ) ? "manual" : point->source.c_str( ) );
+				if ( point->source_pixel_assist_index >= 0 )
+					ImGui::TextWrapped( "assist candidate: P%d", point->source_pixel_assist_index + 1 );
+			};
+
+			ImGui::SetCursorPos( ImVec2( 150.0f, 10.0f ) );
+			child( "master", ImVec2( 230.0f, 185.0f ), [ & ]( ) {
+				checkbox( "route calculator", &GET_VARIABLE( g_variables.m_route_calculator, bool ) );
+				help_marker( "Local/debug calculator only. It stores separate route points, never mutates usercmds, and never auto-plays routes." );
+				checkbox( "strict validation", &GET_VARIABLE( g_variables.m_routecalc_strict_validation, bool ) );
+				checkbox( "routecalc scanline", &GET_VARIABLE( g_variables.m_routecalc_scanline, bool ) );
+				checkbox( "show pixelsurf assist candidates", &GET_VARIABLE( g_variables.m_routecalc_show_assist_candidates, bool ) );
+				checkbox( "show routecalc points", &GET_VARIABLE( g_variables.m_routecalc_show_points, bool ) );
+				checkbox( "manual pixelsurf debug", &GET_VARIABLE( g_variables.m_routecalc_manual_pixelsurf_debug, bool ) );
+				checkbox( "keybind helper boxes", &GET_VARIABLE( g_variables.m_routecalc_helper_boxes, bool ) );
+			} );
+
+			ImGui::SetCursorPos( ImVec2( 150.0f, 210.0f ) );
+			child( "preference", ImVec2( 230.0f, 275.0f ), [ & ]( ) {
+				checkbox( "stop calculating at max displayed", &GET_VARIABLE( g_variables.m_routecalc_stop_at_max_displayed, bool ) );
+				slider_int( "max displayed combos", &GET_VARIABLE( g_variables.m_routecalc_max_displayed_combos, int ), 1, 50, "%d" );
+				slider_float( "max render distance", &GET_VARIABLE( g_variables.m_routecalc_max_render_distance, float ), 100.f, 3000.f, "%.0f" );
+
+				const char* tickrates[] = { "64 tick", "128 tick" };
+				const int previous_tickrate = tickrate_index;
+				combo( "tickrate", tickrate_index, tickrates, IM_ARRAYSIZE( tickrates ) );
+				if ( previous_tickrate != tickrate_index )
+					run_route_simulation( route_settings, routes, tickrate_index );
+
+				if ( button( "run simple simulation", ImVec2( 210, 0 ) ) )
+					run_route_simulation( route_settings, routes, tickrate_index );
+
+				static char manual_combo[ 160 ] = "";
+				static char observed_map[ 64 ] = "";
+				static char observed_area[ 64 ] = "";
+				static std::string last_manual_combo;
+				static std::string last_observed_map;
+				static std::string last_observed_area;
+				auto& manual_combo_value = GET_VARIABLE( g_variables.m_routecalc_manual_combo, std::string );
+				auto& observed_map_value = GET_VARIABLE( g_variables.m_routecalc_observed_map, std::string );
+				auto& observed_area_value = GET_VARIABLE( g_variables.m_routecalc_observed_area, std::string );
+				if ( manual_combo_value != last_manual_combo ) {
+					strncpy_s( manual_combo, sizeof( manual_combo ), manual_combo_value.c_str( ), _TRUNCATE );
+					last_manual_combo = manual_combo_value;
+				}
+				if ( observed_map_value != last_observed_map ) {
+					strncpy_s( observed_map, sizeof( observed_map ), observed_map_value.c_str( ), _TRUNCATE );
+					last_observed_map = observed_map_value;
+				}
+				if ( observed_area_value != last_observed_area ) {
+					strncpy_s( observed_area, sizeof( observed_area ), observed_area_value.c_str( ), _TRUNCATE );
+					last_observed_area = observed_area_value;
+				}
+				if ( input_text( "manual combo", manual_combo, manual_combo, IM_ARRAYSIZE( manual_combo ), 210.f, 20.f, NULL ) ) {
+					manual_combo_value = manual_combo;
+					last_manual_combo = manual_combo_value;
+				}
+				if ( input_text( "observed map", observed_map, observed_map, IM_ARRAYSIZE( observed_map ), 210.f, 20.f, NULL ) ) {
+					observed_map_value = observed_map;
+					last_observed_map = observed_map_value;
+				}
+				if ( input_text( "observed area", observed_area, observed_area, IM_ARRAYSIZE( observed_area ), 210.f, 20.f, NULL ) ) {
+					observed_area_value = observed_area;
+					last_observed_area = observed_area_value;
+				}
+
+				ImGui::Separator( );
+				ImGui::TextWrapped( "standing hull: 72u" );
+				ImGui::TextWrapped( "ducked hull: 54u" );
+				ImGui::TextWrapped( "hull delta: 18u" );
+				ImGui::TextWrapped( "air duck origin shift: +9u" );
+				ImGui::TextWrapped( "air unduck origin shift: -9u" );
+				ImGui::TextWrapped( "gravity: %.0f", route_settings.gravity );
+				ImGui::TextWrapped( "jump impulse: %.6f", route_settings.jump_impulse );
+				ImGui::TextWrapped( "tick interval: %.6f", route_settings.tick_interval );
+				ImGui::TextWrapped( "half gravity: %.3f", route_calc::HalfGravity( route_settings ) );
+				ImGui::TextWrapped( "duck step: %.3f/tick (%d ticks)", route_calc::DuckStep( route_settings ), route_calc::DuckTicks( route_settings ) );
+				ImGui::Separator( );
+				ImGui::TextWrapped( "solver: simplified/debug combos only; TracePlayerBBox and map collision route search are TODO." );
+			} );
+
+			ImGui::SetCursorPos( ImVec2( 390.0f, 10.0f ) );
+			child( "points", ImVec2( 230.0f, 210.0f ), [ & ]( ) {
+				const auto& route_points = route_calc::GetRoutePoints( );
+				if ( route_points.empty( ) ) {
+					ImGui::TextWrapped( "no route points yet" );
+					ImGui::TextWrapped( "add a floor point, then copy/import a pixelsurf candidate." );
+					return;
+				}
+
+				for ( int i = 0; i < static_cast< int >( route_points.size( ) ); ++i ) {
+					std::ostringstream label;
+					label << route_point_label( route_points[ i ], i ) << "##route_point_" << i;
+					if ( ImGui::Selectable( label.str( ).c_str( ), route_calc::GetSelectedRoutePointIndex( ) == i ) )
+						route_calc::SetSelectedRoutePointIndex( i );
+				}
+				if ( button( "clear all points", ImVec2( 190, 0 ) ) )
+					route_calc::ClearRoutePoints( );
+			} );
+
+			ImGui::SetCursorPos( ImVec2( 390.0f, 235.0f ) );
+			child( "point settings", ImVec2( 230.0f, 250.0f ), [ & ]( ) {
+				auto* selected_point = route_calc::GetMutableSelectedRoutePoint( );
+				if ( selected_point ) {
+					int point_type = selected_point->type == route_calc::PointType::PixelSurf ? 1 : 0;
+					const int previous_type = point_type;
+					const char* point_types[] = { "floor", "pixelsurf" };
+					combo( "type", point_type, point_types, IM_ARRAYSIZE( point_types ) );
+					if ( point_type != previous_type )
+						route_calc::SetRoutePointType( route_calc::GetSelectedRoutePointIndex( ),
+						                                point_type == 1 ? route_calc::PointType::PixelSurf : route_calc::PointType::Floor );
+				}
+
+				draw_route_point_details( "selected point", route_calc::GetSelectedRoutePoint( ), route_calc::GetSelectedRoutePointIndex( ) );
+				ImGui::Separator( );
+				ImGui::Text( "add floor" );
+				keybind( "add floor##routecalc", &GET_VARIABLE( g_variables.m_routecalc_add_floor_key, key_bind_t ) );
+				ImGui::Text( "add pixelsurf" );
+				keybind( "add pixelsurf##routecalc", &GET_VARIABLE( g_variables.m_routecalc_add_pixelsurf_key, key_bind_t ) );
+				ImGui::Text( "calculate combos" );
+				keybind( "calculate combos##routecalc", &GET_VARIABLE( g_variables.m_routecalc_calculate_key, key_bind_t ) );
+				ImGui::Text( "delete point" );
+				keybind( "delete point##routecalc", &GET_VARIABLE( g_variables.m_routecalc_delete_point_key, key_bind_t ) );
+				ImGui::Text( "clear all points" );
+				keybind( "clear all points##routecalc", &GET_VARIABLE( g_variables.m_routecalc_clear_points_key, key_bind_t ) );
+				if ( button( "calculate combos", ImVec2( 190, 0 ) ) )
+					calculate_combos( );
+				if ( button( "delete selected / last", ImVec2( 190, 0 ) ) )
+					route_calc::DeleteSelectedOrLastRoutePoint( );
+
+				ImGui::Separator( );
+				const auto& combos = route_calc::GetComboResults( );
+				if ( selected_combo >= static_cast< int >( combos.size( ) ) )
+					selected_combo = 0;
+
+				if ( combos.empty( ) ) {
+					ImGui::TextWrapped( "no validated route" );
+					ImGui::TextWrapped( "%s", route_calc::GetLastCalculationMessage( ).c_str( ) );
+					ImGui::TextWrapped( "manual observed: %s", GET_VARIABLE( g_variables.m_routecalc_manual_combo, std::string ).c_str( ) );
+					ImGui::TextWrapped( "solver suggested: none" );
+					ImGui::TextWrapped( "match: no" );
+					ImGui::TextWrapped( "reason: %s", route_calc::GetLastCalculationMessage( ).c_str( ) );
+				} else {
+					for ( int i = 0; i < static_cast< int >( combos.size( ) ); ++i ) {
+						std::ostringstream label;
+						label << combos[ i ].index << ". " << combos[ i ].text << " [" << route_calc::ToString( combos[ i ].status ) << "]##combo_" << i;
+						if ( ImGui::Selectable( label.str( ).c_str( ), selected_combo == i ) )
+							selected_combo = i;
+					}
+
+					ImGui::Separator( );
+					const auto& combo_result = combos[ selected_combo ];
+					ImGui::TextWrapped( "score: %.1f", combo_result.score );
+					ImGui::TextWrapped( "start point: %d", combo_result.start_point_id );
+					ImGui::TextWrapped( "end point: %d", combo_result.end_point_id );
+					ImGui::TextWrapped( "notes: %s", combo_result.notes.c_str( ) );
+					ImGui::TextWrapped( "status: %s", route_calc::ToString( combo_result.status ) );
+					ImGui::TextWrapped( "reason: %s", combo_result.status_reason.c_str( ) );
+					const std::string& manual = GET_VARIABLE( g_variables.m_routecalc_manual_combo, std::string );
+					const bool match = !manual.empty( ) && combo_result.text == manual;
+					ImGui::TextWrapped( "manual observed: %s", manual.c_str( ) );
+					ImGui::TextWrapped( "solver suggested: %s", combo_result.text.c_str( ) );
+					ImGui::TextWrapped( "match: %s", match ? "yes" : "no" );
+					if ( !match )
+						ImGui::TextWrapped( "reason: solver output differs from manual observation or is only a debug heuristic." );
+				}
+
+				ImGui::Separator( );
+				if ( routes.empty( ) )
+					return;
+				const auto& route = routes[ selected_route ];
+				ImGui::TextWrapped( "vertical sim: %s", route.name.c_str( ) );
+				ImGui::TextWrapped( "apex z: %.2f", route.apex_z );
+				ImGui::TextWrapped( "tick count: %d", route_tick_count( route ) );
+				help_marker( route_events_text( route ).c_str( ) );
+			} );
 		}
 
 		draw_status_bar( );

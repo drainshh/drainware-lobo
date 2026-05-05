@@ -27,6 +27,7 @@ Y:\src\globals\globals.cpp;Y:\src\intermediates\globals.obj
 Y:\src\globals\math\math.cpp;Y:\src\intermediates\math.obj
 Y:\src\globals\media_player\media_player.cpp;Y:\src\intermediates\media_player.obj
 Y:\src\globals\render\draw.cpp;Y:\src\intermediates\draw.obj
+Y:\src\features\route_calc\route_calculator.cpp;Y:\src\intermediates\route_calculator.obj
 Y:\src\resources\embedded\watermark_assets.cpp;Y:\src\intermediates\watermark_assets.obj
 Y:\src\hacks\aimbot\aimbot.cpp;Y:\src\intermediates\aimbot.obj
 Y:\src\hacks\animations\animations.cpp;Y:\src\intermediates\animations.obj
