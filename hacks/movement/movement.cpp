@@ -351,14 +351,24 @@ const char* routecalc_state_guess( const bool on_ground, const bool jump, const 
 
 void calculate_routecalc_combos( )
 {
-	route_calc::AppendDebugLog( "routecalc", "calculate_combos_pressed" );
-	route_calc::CalculateSimpleCombos( std::max( 1, GET_VARIABLE( g_variables.m_routecalc_max_displayed_combos, int ) ),
-	                                   GET_VARIABLE( g_variables.m_routecalc_stop_at_max_displayed, bool ),
-	                                   GET_VARIABLE( g_variables.m_routecalc_strict_validation, bool ),
-	                                   GET_VARIABLE( g_variables.m_routecalc_max_render_distance, float ),
-	                                   GET_VARIABLE( g_variables.m_routecalc_manual_combo, std::string ),
-	                                   GET_VARIABLE( g_variables.m_routecalc_observed_map, std::string ),
-	                                   GET_VARIABLE( g_variables.m_routecalc_observed_area, std::string ) );
+	route_calc::BruteForceSettings settings{ };
+	settings.enabled = GET_VARIABLE( g_variables.m_routecalc_bruteforce_enabled, bool );
+	settings.start_from_current_player = GET_VARIABLE( g_variables.m_routecalc_start_from_current_player, bool );
+	settings.use_all_points = GET_VARIABLE( g_variables.m_routecalc_use_all_points, bool );
+	settings.use_hull_trace = GET_VARIABLE( g_variables.m_routecalc_use_hull_trace, bool );
+	settings.show_debug_candidates = GET_VARIABLE( g_variables.m_routecalc_show_all_debug_candidates, bool );
+	settings.show_rejects = GET_VARIABLE( g_variables.m_routecalc_show_rejects, bool );
+	settings.allow_heavy_cpu = GET_VARIABLE( g_variables.m_routecalc_allow_heavy_cpu, bool );
+	settings.tickrate = GET_VARIABLE( g_variables.m_routecalc_tickrate, int );
+	settings.max_depth = GET_VARIABLE( g_variables.m_routecalc_max_depth, int );
+	settings.max_ticks = GET_VARIABLE( g_variables.m_routecalc_max_ticks, int );
+	settings.max_sequences = GET_VARIABLE( g_variables.m_routecalc_max_sequences, int );
+	settings.max_variants = GET_VARIABLE( g_variables.m_routecalc_max_variants, int );
+	settings.hard_timeout_ms = GET_VARIABLE( g_variables.m_routecalc_hard_timeout_ms, int );
+	settings.floor_radius = GET_VARIABLE( g_variables.m_routecalc_point_radius_floor, float );
+	settings.pixelsurf_radius = GET_VARIABLE( g_variables.m_routecalc_point_radius_pixelsurf, float );
+	if ( settings.enabled )
+		route_calc::RunBruteForceCalculation( settings, "hotkey" );
 }
 
 void handle_routecalc_actions( )
@@ -471,7 +481,7 @@ void render_routecalc_helper_boxes( )
 	draw_box( c_vector_2d( x, y ), c_vector_2d( 150.0f, 86.0f ), "route calculator",
 	          { { "add floor", route_bind_name( GET_VARIABLE( g_variables.m_routecalc_add_floor_key, key_bind_t ) ) },
 	            { "add pixelsurf", route_bind_name( GET_VARIABLE( g_variables.m_routecalc_add_pixelsurf_key, key_bind_t ) ) },
-	            { "calculate combos", route_bind_name( GET_VARIABLE( g_variables.m_routecalc_calculate_key, key_bind_t ) ) },
+	            { "calculate route", route_bind_name( GET_VARIABLE( g_variables.m_routecalc_calculate_key, key_bind_t ) ) },
 	            { "delete point", route_bind_name( GET_VARIABLE( g_variables.m_routecalc_delete_point_key, key_bind_t ) ) },
 	            { "clear all points", route_bind_name( GET_VARIABLE( g_variables.m_routecalc_clear_points_key, key_bind_t ) ) } } );
 

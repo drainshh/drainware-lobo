@@ -28,6 +28,38 @@ namespace
 		return text.find( "player\\land" ) != std::string::npos || text.find( "player/land" ) != std::string::npos;
 	}
 
+	std::string normalized_sound_text( const char* sound_entry, const char* sample )
+	{
+		std::string text;
+		if ( sound_entry )
+			text += sound_entry;
+		text += ' ';
+		if ( sample )
+			text += sample;
+
+		std::transform( text.begin( ), text.end( ), text.begin( ),
+		                []( const unsigned char c ) { return static_cast< char >( std::tolower( c ) ); } );
+		return text;
+	}
+
+	bool is_engine_movement_sound( const char* sound_entry, const char* sample )
+	{
+		const std::string text = normalized_sound_text( sound_entry, sample );
+		return text.find( "player\\land" ) != std::string::npos || text.find( "player/land" ) != std::string::npos ||
+		       text.find( "player\\footsteps" ) != std::string::npos || text.find( "player/footsteps" ) != std::string::npos ||
+		       text.find( "suit_" ) != std::string::npos || text.find( "player\\pl_" ) != std::string::npos ||
+		       text.find( "player/pl_" ) != std::string::npos;
+	}
+
+	bool is_feature_sound( const char* sound_entry, const char* sample )
+	{
+		const std::string text = normalized_sound_text( sound_entry, sample );
+		return text.find( "weapons/revolver/revolver_prepare" ) != std::string::npos ||
+		       text.find( "weapons\\revolver\\revolver_prepare" ) != std::string::npos || text.find( "ui\\beep" ) != std::string::npos ||
+		       text.find( "ui/beep" ) != std::string::npos || text.find( "drainware" ) != std::string::npos ||
+		       text.find( "routecalc" ) != std::string::npos || text.find( "pixelsurf" ) != std::string::npos;
+	}
+
 	bool should_suppress_static_land_duplicate( const char* sample )
 	{
 		static std::unordered_map< std::string, float > last_land_sound_time;
@@ -66,11 +98,26 @@ void __fastcall n_detoured_functions::emit_sound( void* ecx, void* edx, void* fi
 	static auto original = g_hooks.m_emit_sound.get_original< decltype( &n_detoured_functions::emit_sound ) >( );
 
 	if ( g_in_movement_assist_simulation ) {
-		drainware_note_suppressed_sound( "in_assist_simulation", sample );
-		movement_assist_debug_log( "sound", std::string( "suppressed reason=in_assist_simulation source=" ) +
-		                                      g_movement_assist_simulation_reason + " sample=" + ( sample ? sample : "<null>" ),
-		                           0.12f, sample ? sample : "assist_sound" );
-		return;
+		const bool feature_sound = drainware_current_sound_is_feature( ) || is_feature_sound( sound_entry, sample );
+		const bool movement_noise = is_engine_movement_sound( sound_entry, sample );
+		const char* source = g_drainware_feature_sound_source && g_drainware_feature_sound_source[ 0 ] ?
+		                         g_drainware_feature_sound_source :
+		                         g_movement_assist_simulation_reason;
+		if ( movement_noise && !feature_sound ) {
+			drainware_note_suppressed_sound( "in_assist_simulation", sample );
+			if ( GET_VARIABLE( g_variables.m_debug_log_sound, bool ) ) {
+				movement_assist_debug_log( "sound", std::string( "suppress reason=simulation_noise source=" ) + source +
+				                                      " sample=" + ( sample ? sample : "<null>" ),
+				                           0.12f, sample ? sample : "assist_sound" );
+			}
+			return;
+		}
+
+		if ( feature_sound && GET_VARIABLE( g_variables.m_debug_log_sound, bool ) ) {
+			movement_assist_debug_log( "sound", std::string( "allow reason=feature_sound source=" ) + source +
+			                                      " sample=" + ( sample ? sample : "<null>" ),
+			                           0.12f, sample ? sample : "feature_sound" );
+		}
 	}
 
 	if ( channel == k_chan_static && contains_movement_land_sound( sound_entry, sample ) && should_suppress_static_land_duplicate( sample ) ) {

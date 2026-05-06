@@ -207,24 +207,55 @@ namespace
 	{
 		drainware_stability_breadcrumb( feature );
 
-		if ( g_in_movement_assist_simulation ) {
+		const std::string feature_name = feature && feature[ 0 ] ? feature : "ui_feature";
+		std::string lowered_feature = feature_name;
+		std::string lowered_sound_for_source = sound_path;
+		std::transform( lowered_feature.begin( ), lowered_feature.end( ), lowered_feature.begin( ),
+		                []( unsigned char c ) { return static_cast< char >( std::tolower( c ) ); } );
+		std::transform( lowered_sound_for_source.begin( ), lowered_sound_for_source.end( ), lowered_sound_for_source.begin( ),
+		                []( unsigned char c ) { return static_cast< char >( std::tolower( c ) ); } );
+
+		DrainwareSoundSourceKind feature_kind = DrainwareSoundSourceKind::Unknown;
+		const char* feature_source = feature_name.c_str( );
+		if ( lowered_feature.find( "pixelsurf" ) != std::string::npos ||
+		     lowered_sound_for_source.find( "weapons/revolver/revolver_prepare" ) != std::string::npos ||
+		     lowered_sound_for_source.find( "weapons\\revolver\\revolver_prepare" ) != std::string::npos ) {
+			feature_kind = DrainwareSoundSourceKind::PixelSurfAssistFeature;
+			feature_source = "pixelsurf_assist";
+		} else if ( lowered_feature.find( "routecalc" ) != std::string::npos || lowered_sound_for_source.find( "routecalc" ) != std::string::npos ) {
+			feature_kind = DrainwareSoundSourceKind::RouteCalcFeature;
+			feature_source = "routecalc";
+		} else if ( lowered_feature.find( "ui" ) != std::string::npos || lowered_sound_for_source.find( "ui\\beep" ) != std::string::npos ||
+		            lowered_sound_for_source.find( "ui/beep" ) != std::string::npos || lowered_sound_for_source.find( "drainware" ) != std::string::npos ) {
+			feature_kind = DrainwareSoundSourceKind::UiFeature;
+			feature_source = "ui_feature";
+		}
+		const bool feature_sound = drainware_is_feature_sound_kind( feature_kind );
+
+		if ( g_in_movement_assist_simulation && !feature_sound ) {
 			drainware_note_suppressed_sound( "custom_sound_in_assist_simulation", sound_path.c_str( ) );
-			debug_log( "sound", std::string( "blocked reason=in_assist_simulation feature=" ) + feature,
-			           GET_VARIABLE( g_variables.m_debug_log_sound, bool ), 0.25f, feature );
+			debug_log( "sound", std::string( "blocked reason=in_assist_simulation feature=" ) + feature_name,
+			           GET_VARIABLE( g_variables.m_debug_log_sound, bool ), 0.25f, feature_name.c_str( ) );
 			return false;
+		} else if ( g_in_movement_assist_simulation ) {
+			debug_log( "sound", std::string( "allow reason=feature_sound source=" ) + feature_source + " sample=" + sound_path,
+			           GET_VARIABLE( g_variables.m_debug_log_sound, bool ), 0.25f, feature_source );
 		}
 
-		if ( g_drainware_custom_movement_sounds_muted ) {
+		if ( g_drainware_custom_movement_sounds_muted && !feature_sound ) {
 			drainware_note_suppressed_sound( "custom_sounds_muted", sound_path.c_str( ) );
-			debug_log( "sound", std::string( "blocked reason=custom_sounds_muted feature=" ) + feature,
-			           GET_VARIABLE( g_variables.m_debug_log_sound, bool ), 0.25f, feature );
+			debug_log( "sound", std::string( "blocked reason=custom_sounds_muted feature=" ) + feature_name,
+			           GET_VARIABLE( g_variables.m_debug_log_sound, bool ), 0.25f, feature_name.c_str( ) );
 			return false;
+		} else if ( g_drainware_custom_movement_sounds_muted ) {
+			debug_log( "sound", std::string( "allow reason=feature_sound_while_custom_muted source=" ) + feature_source + " sample=" + sound_path,
+			           GET_VARIABLE( g_variables.m_debug_log_sound, bool ), 0.25f, feature_source );
 		}
 
 		if ( sound_path.empty( ) || !g_interfaces.m_surface ) {
 			drainware_note_suppressed_sound( "empty_or_no_surface", sound_path.c_str( ) );
-			debug_log( "sound", std::string( "blocked empty_or_no_surface feature=" ) + feature, GET_VARIABLE( g_variables.m_debug_log_sound, bool ), 0.4f,
-			           feature );
+			debug_log( "sound", std::string( "blocked empty_or_no_surface feature=" ) + feature_name, GET_VARIABLE( g_variables.m_debug_log_sound, bool ), 0.4f,
+			           feature_name.c_str( ) );
 			return false;
 		}
 
@@ -232,7 +263,7 @@ namespace
 		std::transform( lowered.begin( ), lowered.end( ), lowered.begin( ), []( unsigned char c ) { return static_cast< char >( std::tolower( c ) ); } );
 		if ( lowered.find( "player\\land" ) != std::string::npos || lowered.find( "player/land" ) != std::string::npos ) {
 			drainware_note_suppressed_sound( "blocked_default_land_sound", sound_path.c_str( ) );
-			debug_log( "sound", std::string( "blocked default land sound path=" ) + sound_path + " feature=" + feature,
+			debug_log( "sound", std::string( "blocked default land sound path=" ) + sound_path + " feature=" + feature_name,
 			           GET_VARIABLE( g_variables.m_debug_log_sound, bool ), 0.3f, "blocked_land" );
 			return false;
 		}
@@ -242,7 +273,7 @@ namespace
 		const float now = current_real_time( );
 		if ( now - last_global_movement_sound < 0.06f ) {
 			drainware_note_suppressed_sound( "global_sound_rate_limit", sound_path.c_str( ) );
-			debug_log( "sound", std::string( "blocked global_rate_limit sound=" ) + sound_path + " feature=" + feature,
+			debug_log( "sound", std::string( "blocked global_rate_limit sound=" ) + sound_path + " feature=" + feature_name,
 			           GET_VARIABLE( g_variables.m_debug_log_sound, bool ), 0.15f, "global_rate_limit" );
 			return false;
 		}
@@ -250,7 +281,7 @@ namespace
 		if ( it != last_sound_time.end( ) && now - it->second < cooldown ) {
 			drainware_note_suppressed_sound( "per_sound_cooldown", sound_path.c_str( ) );
 			std::ostringstream message;
-			message << "blocked duplicate sound=" << sound_path << " feature=" << feature << " cooldown=" << std::fixed << std::setprecision( 2 )
+			message << "blocked duplicate sound=" << sound_path << " feature=" << feature_name << " cooldown=" << std::fixed << std::setprecision( 2 )
 			        << cooldown << " remaining=" << std::max( 0.f, cooldown - ( now - it->second ) );
 			debug_log( "sound", message.str( ), GET_VARIABLE( g_variables.m_debug_log_sound, bool ), 0.15f, lowered.c_str( ) );
 			return false;
@@ -258,8 +289,13 @@ namespace
 
 		last_sound_time[ lowered ] = now;
 		last_global_movement_sound = now;
-		g_interfaces.m_surface->play_sound( sound_path.c_str( ) );
-		debug_log( "sound", std::string( "played sound=" ) + sound_path + " feature=" + feature, GET_VARIABLE( g_variables.m_debug_log_sound, bool ),
+		if ( feature_sound ) {
+			ScopedDrainwareFeatureSound feature_sound_scope( feature_source, feature_kind );
+			g_interfaces.m_surface->play_sound( sound_path.c_str( ) );
+		} else {
+			g_interfaces.m_surface->play_sound( sound_path.c_str( ) );
+		}
+		debug_log( "sound", std::string( "played sound=" ) + sound_path + " feature=" + feature_name, GET_VARIABLE( g_variables.m_debug_log_sound, bool ),
 		           0.15f, lowered.c_str( ) );
 		return true;
 	}
@@ -2206,19 +2242,16 @@ void n_misc::impl_t::draw_visual_cosmetics( )
 		                               std::clamp( GET_VARIABLE( g_variables.m_px_sound_pitch_max, float ), 0.5f, 2.0f ), normalized );
 		const std::string sound_path = px_sound_type == 0 ? "weapons/revolver/revolver_prepare.wav" :
 		                               px_sound_type == 1 ? GET_VARIABLE( g_variables.m_px_sound_custom_path, std::string ) : "";
-		if ( g_in_movement_assist_simulation ) {
-			if ( GET_VARIABLE( g_variables.m_px_sound_debug, bool ) )
-				debug_log( "sound][px", "skipped reason=in_assist_simulation", true, 0.2f, "px_sim" );
-		} else if ( pixelsurf_confirmed && px_sound_type != 2 && !sound_path.empty( ) ) {
+		if ( pixelsurf_confirmed && px_sound_type != 2 && !sound_path.empty( ) ) {
 			if ( !px_sound_active && now - last_px_sound_time > retrigger ) {
-				safe_play_ui_sound( sound_path, "pixelsurf", retrigger );
+				safe_play_ui_sound( sound_path, "pixelsurf_assist", retrigger );
 				if ( GET_VARIABLE( g_variables.m_px_sound_debug, bool ) )
 					debug_log( "sound][px", "start velocity=" + std::to_string( static_cast< int >( speed ) ) + " pitch=" + std::to_string( pitch ),
 					           true, 0.08f, "px_start" );
 				px_sound_active = true;
 				last_px_sound_time = now;
 			} else if ( px_sound_active && now - last_px_sound_time > retrigger ) {
-				safe_play_ui_sound( sound_path, "pixelsurf", retrigger );
+				safe_play_ui_sound( sound_path, "pixelsurf_assist", retrigger );
 				if ( GET_VARIABLE( g_variables.m_px_sound_debug, bool ) )
 					debug_log( "sound][px", "retrigger velocity=" + std::to_string( static_cast< int >( speed ) ) + " pitch=" + std::to_string( pitch ),
 					           true, 0.08f, "px_retrigger" );

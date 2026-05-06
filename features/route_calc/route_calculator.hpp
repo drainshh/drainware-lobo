@@ -97,6 +97,107 @@ struct RoutePoint {
 	float distance = -1.0f;
 };
 
+enum class MovementAction : std::uint8_t {
+	Jump,
+	Duck,
+	Unduck,
+	CrouchJump,
+	LongJump,
+	MiniJump,
+	JumpBug,
+	PixelSurfContact,
+	PixelSurfExit,
+	Land,
+};
+
+struct ActionTiming {
+	MovementAction action = MovementAction::Jump;
+	int earliest_tick = -1;
+	int latest_tick = -1;
+	float confidence = 0.0f;
+	std::string reason{ };
+};
+
+struct TraceEvidence {
+	bool attempted = false;
+	bool available = false;
+	bool line_hit = false;
+	bool line_wall_like = false;
+	bool line_matches_target = false;
+	bool path_blocked_early = false;
+	bool path_reaches_contact = false;
+	float line_fraction = 1.0f;
+	float line_distance_to_target = 0.0f;
+	float line_normal_dot = 0.0f;
+	Vec3 line_normal{ };
+
+	bool standing_hull_hit = false;
+	bool duck_hull_hit = false;
+	float standing_hull_fraction = 1.0f;
+	float duck_hull_fraction = 1.0f;
+	Vec3 standing_hull_normal{ };
+	Vec3 duck_hull_normal{ };
+	std::string reason{ };
+};
+
+struct RouteSegmentGeometry {
+	int from_id = 0;
+	int to_id = 0;
+	PointType from_type = PointType::Floor;
+	PointType to_type = PointType::Floor;
+	Vec3 from{ };
+	Vec3 to{ };
+	Vec3 delta{ };
+	float distance2d = 0.0f;
+	float height_delta = 0.0f;
+	Vec3 target_normal{ };
+	bool target_has_normal = false;
+	bool target_is_wall_like = false;
+	bool target_is_floor_like = false;
+	bool target_from_scanline = false;
+	float approach_dot = 0.0f;
+	std::string target_source{ };
+	TraceEvidence trace{ };
+};
+
+struct JumpProfile {
+	std::string name{ };
+	MovementAction action = MovementAction::Jump;
+	float initial_z_velocity = 0.0f;
+	float origin_shift = 0.0f;
+	float apex_height = 0.0f;
+	int apex_tick = -1;
+	int land_tick_estimate = -1;
+};
+
+struct TickCandidate {
+	int tick = -1;
+	float required_speed2d = 0.0f;
+	float z_error = 0.0f;
+	float score = 0.0f;
+};
+
+struct CompositeCandidate {
+	std::vector< MovementAction > actions{ };
+	int start_tick = 0;
+	int contact_tick = -1;
+	float required_speed2d = 0.0f;
+	float score = 0.0f;
+	std::string reason{ };
+};
+
+struct ScoreBreakdown {
+	float base = 0.0f;
+	float z_score = 0.0f;
+	float speed_score = 0.0f;
+	float approach_score = 0.0f;
+	float type_score = 0.0f;
+	float speed_crop_bonus = 0.0f;
+	float manual_match_bonus = 0.0f;
+	float penalties = 0.0f;
+	float final_score = 0.0f;
+};
+
 struct ComboResult {
 	enum class Status : std::uint8_t {
 		Invalid,
@@ -104,6 +205,7 @@ struct ComboResult {
 		DebugHeuristic,
 		GeometryValidated,
 		ManualObserved,
+		ManualObservedBoosted,
 	};
 
 	int index = 0;
@@ -114,12 +216,126 @@ struct ComboResult {
 	std::string notes{ };
 	Status status = Status::Unvalidated;
 	std::string status_reason{ };
+	RouteSegmentGeometry geometry{ };
+	std::vector< ActionTiming > actions{ };
+	std::vector< JumpProfile > tested_profiles{ };
+	int z_window_start = -1;
+	int z_window_end = -1;
+	float required_speed_min = 0.0f;
+	float required_speed_max = 0.0f;
+	int valid_tick_start = -1;
+	int valid_tick_end = -1;
+	int best_tick = -1;
+	float best_required_speed = 0.0f;
+	std::vector< TickCandidate > valid_ticks{ };
+	CompositeCandidate composite{ };
+	ScoreBreakdown score_breakdown{ };
+	int hidden_debug_candidates = 0;
+	float approach_dot = 0.0f;
+	std::string reject_reason{ };
+	std::string solver_debug{ };
+	bool solver_validated = false;
+};
+
+struct ManualRouteObservation {
+	std::string map{ };
+	std::string area{ };
+	int floor_id = 0;
+	int target_id = 0;
+	Vec3 start{ };
+	Vec3 target{ };
+	Vec3 target_normal{ };
+	Vec3 delta{ };
+	float distance2d = 0.0f;
+	float height_delta = 0.0f;
+	std::string sequence{ };
+	std::string result{ };
+};
+
+struct SimStart {
+	Vec3 origin{ };
+	Vec3 velocity{ };
+	Vec3 view_angles{ };
+	int flags = 0;
+	int tick_base = 0;
+	int buttons = 0;
+	bool on_ground = false;
+	float duck_amount = 0.0f;
+	float duck_speed = 8.0f;
+	float speed2d = 0.0f;
+	bool captured = false;
+	std::string source{ };
+};
+
+struct BruteForceSettings {
+	bool enabled = true;
+	bool start_from_current_player = true;
+	bool use_all_points = true;
+	bool use_hull_trace = true;
+	bool show_debug_candidates = false;
+	bool show_rejects = false;
+	bool allow_heavy_cpu = true;
+	int tickrate = 64;
+	int max_depth = 4;
+	int max_ticks = 256;
+	int max_sequences = 5000;
+	int max_variants = 60000;
+	int hard_timeout_ms = 4500;
+	float floor_radius = 18.0f;
+	float pixelsurf_radius = 8.0f;
+};
+
+enum class RouteResultStatus : std::uint8_t {
+	Idle,
+	Calculating,
+	SimulatedHitAllPoints,
+	SimulatedPartialHit,
+	NearMiss,
+	Rejected,
+	Error,
+	Cancelled,
+	TimedOut,
+};
+
+struct BruteForceProgress {
+	bool running = false;
+	bool cancel_requested = false;
+	int sequences_generated = 0;
+	int variants_tested = 0;
+	int simulations_run = 0;
+	int hits_found = 0;
+	int rejected_count = 0;
+	int elapsed_ms = 0;
+	int hidden_candidates = 0;
+	std::string status_text{ "idle" };
+};
+
+struct BruteForceResult {
+	RouteResultStatus status = RouteResultStatus::Idle;
+	std::string sequence{ };
+	std::string reason{ };
+	std::string closest_sequence{ };
+	int hit_points = 0;
+	int total_points = 0;
+	int closest_point_id = 0;
+	float closest_distance = 0.0f;
+	int closest_tick = -1;
+	int pixelsurf_tick = -1;
+	float score = 0.0f;
+	int elapsed_ms = 0;
+	bool trace_confirmed = false;
+	bool approximate_hull_hit = false;
+	SimStart start{ };
+	std::vector< int > point_hit_ticks{ };
+	std::vector< MovementAction > actions{ };
 };
 
 const char* ToString( Action action );
 const char* ToString( RouteEvent::Type type );
 const char* ToString( PointType type );
+const char* ToString( MovementAction action );
 const char* ToString( ComboResult::Status status );
+const char* ToString( RouteResultStatus status );
 
 float HalfGravity( const Settings& settings );
 float DuckStep( const Settings& settings );
@@ -151,9 +367,19 @@ bool HasAimedPixelSurfAssistCandidate( );
 const RoutePoint* GetAimedPixelSurfAssistCandidate( );
 
 std::vector< ComboResult > CalculateSimpleCombos( int max_displayed, bool stop_at_max_displayed, bool strict_validation = false,
-                                                  float max_calculation_distance = 1000.0f, const std::string& manual_observed_combo = "",
-                                                  const std::string& manual_observed_map = "", const std::string& manual_observed_area = "" );
+                                                  bool show_all_debug_candidates = false, float max_calculation_distance = 1000.0f,
+                                                  const std::string& manual_observed_combo = "",
+                                                  const std::string& manual_observed_map = "", const std::string& manual_observed_area = "",
+                                                  const std::string& source = "" );
 const std::vector< ComboResult >& GetComboResults( );
 const ComboResult* GetPrimaryCombo( );
 const std::string& GetLastCalculationMessage( );
+const std::vector< ManualRouteObservation >& GetManualObservations( );
+const ManualRouteObservation* GetLastManualObservation( );
+
+bool CaptureCurrentPlayerState( SimStart& out, std::string& reason );
+const BruteForceResult& RunBruteForceCalculation( const BruteForceSettings& settings, const std::string& source = "" );
+void CancelBruteForceCalculation( );
+const BruteForceProgress& GetBruteForceProgress( );
+const BruteForceResult& GetBruteForceResult( );
 }

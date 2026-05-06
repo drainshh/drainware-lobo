@@ -11,6 +11,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <cstring>
 
 inline bool g_in_movement_assist_simulation = false;
 inline int g_movement_assist_simulation_depth = 0;
@@ -26,6 +27,63 @@ inline std::string g_drainware_particle_health = "unknown";
 inline std::string g_drainware_config_health = "unknown";
 inline std::string g_drainware_inventory_health = "unknown";
 inline std::string g_drainware_world_health = "unknown";
+inline bool g_drainware_verbose_stability_logs = false;
+
+enum class DrainwareSoundSourceKind {
+	Unknown,
+	EngineSimulationNoise,
+	PlayerFootstep,
+	PlayerLand,
+	PixelSurfAssistFeature,
+	RouteCalcFeature,
+	UiFeature,
+};
+
+inline DrainwareSoundSourceKind g_drainware_feature_sound_kind = DrainwareSoundSourceKind::Unknown;
+inline const char* g_drainware_feature_sound_source = nullptr;
+
+inline bool drainware_is_feature_sound_kind( const DrainwareSoundSourceKind kind )
+{
+	return kind == DrainwareSoundSourceKind::PixelSurfAssistFeature || kind == DrainwareSoundSourceKind::RouteCalcFeature ||
+	       kind == DrainwareSoundSourceKind::UiFeature;
+}
+
+inline bool drainware_current_sound_is_feature( )
+{
+	if ( drainware_is_feature_sound_kind( g_drainware_feature_sound_kind ) )
+		return true;
+
+	if ( !g_drainware_feature_sound_source )
+		return false;
+
+	return std::strcmp( g_drainware_feature_sound_source, "pixelsurf_assist" ) == 0 ||
+	       std::strcmp( g_drainware_feature_sound_source, "routecalc" ) == 0 ||
+	       std::strcmp( g_drainware_feature_sound_source, "ui_feature" ) == 0;
+}
+
+class ScopedDrainwareFeatureSound
+{
+public:
+	ScopedDrainwareFeatureSound( const char* source, const DrainwareSoundSourceKind kind ) :
+		m_previous_kind( g_drainware_feature_sound_kind ), m_previous_source( g_drainware_feature_sound_source )
+	{
+		g_drainware_feature_sound_kind = kind;
+		g_drainware_feature_sound_source = source && source[ 0 ] ? source : "ui_feature";
+	}
+
+	~ScopedDrainwareFeatureSound( )
+	{
+		g_drainware_feature_sound_kind = m_previous_kind;
+		g_drainware_feature_sound_source = m_previous_source;
+	}
+
+	ScopedDrainwareFeatureSound( const ScopedDrainwareFeatureSound& ) = delete;
+	ScopedDrainwareFeatureSound& operator=( const ScopedDrainwareFeatureSound& ) = delete;
+
+private:
+	DrainwareSoundSourceKind m_previous_kind = DrainwareSoundSourceKind::Unknown;
+	const char* m_previous_source = nullptr;
+};
 
 inline void movement_assist_debug_log( const char* feature, const std::string& message, const float rate_limit = 0.f,
                                        const char* rate_key = nullptr )
@@ -57,6 +115,8 @@ inline void movement_assist_debug_log( const char* feature, const std::string& m
 inline void drainware_stability_breadcrumb( const char* action )
 {
 	g_drainware_last_stability_action = action && action[ 0 ] ? action : "unknown";
+	if ( !g_drainware_verbose_stability_logs && g_drainware_last_stability_action == "inventory_frame_stage" )
+		return;
 	movement_assist_debug_log( "stability", std::string( "entering=" ) + g_drainware_last_stability_action, 0.08f,
 	                           g_drainware_last_stability_action.c_str( ) );
 }
