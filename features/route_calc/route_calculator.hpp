@@ -12,6 +12,18 @@ struct Vec3 {
 	float z = 0.0f;
 };
 
+enum class RouteCalcPreset : std::uint8_t {
+	CSGO_64_Normal,
+	CSGO_64_Heavy,
+	CSGO_64_InsaneDebug,
+};
+
+enum class PixelSurfValidationMode : std::uint8_t {
+	StrictTrace,
+	CoordinateNearDebug,
+	PixelAssistOnly,
+};
+
 struct Settings {
 	float tick_interval = 1.0f / 64.0f;
 	float gravity = 800.0f;
@@ -91,6 +103,9 @@ struct RoutePoint {
 	Vec3 position{ };
 	Vec3 normal{ };
 	bool has_normal = false;
+	bool source_trace_hit = false;
+	float source_trace_fraction = 1.0f;
+	Vec3 source_trace_normal{ };
 	int source_pixel_assist_index = -1;
 	std::string source{ };
 	float confidence = 0.0f;
@@ -267,6 +282,11 @@ struct SimStart {
 	std::string source{ };
 };
 
+struct MoveSample {
+	float forwardmove = 0.0f;
+	float sidemove = 0.0f;
+};
+
 struct BruteForceSettings {
 	bool enabled = true;
 	bool start_from_current_player = true;
@@ -282,13 +302,29 @@ struct BruteForceSettings {
 	int max_variants = 60000;
 	int hard_timeout_ms = 4500;
 	float floor_radius = 18.0f;
+	float floor_z_tolerance = 12.0f;
 	float pixelsurf_radius = 8.0f;
+	PixelSurfValidationMode pixelsurf_validation_mode = PixelSurfValidationMode::StrictTrace;
+	std::vector< float > yaw_offsets_deg{ };
+	std::vector< MoveSample > move_samples{ };
+	std::vector< int > speed_samples{ };
+	std::vector< int > delay_samples{ };
+	std::vector< int > minijump_release_offsets{ };
+	std::vector< int > crouchjump_lead_samples{ };
+	bool include_current_view_yaw = true;
+	int log_top_candidates = 10;
+	bool log_all_candidate_summaries = false;
+	std::string manual_sequence{ };
+	std::string preset_name{ "CSGO_64_Normal" };
 };
 
 enum class RouteResultStatus : std::uint8_t {
 	Idle,
 	Calculating,
 	SimulatedHitAllPoints,
+	SimulatedFinalPixelsurfHit,
+	TraceConfirmedContact,
+	CoordinateNearTarget,
 	SimulatedPartialHit,
 	NearMiss,
 	Rejected,
@@ -314,10 +350,24 @@ struct BruteForceResult {
 	RouteResultStatus status = RouteResultStatus::Idle;
 	std::string sequence{ };
 	std::string reason{ };
+	std::string manual_sequence{ };
+	std::string manual_closest_sequence{ };
+	std::string manual_issue{ };
+	int manual_closest_point_id = 0;
+	std::string manual_closest_point_type{ };
+	std::string manual_closest_quality{ };
+	std::string manual_closest_source{ };
+	float manual_closest_distance = -1.0f;
+	int manual_closest_tick = -1;
+	int manual_legal_variants = 0;
+	int manual_illegal_variants = 0;
 	std::string closest_sequence{ };
 	int hit_points = 0;
 	int total_points = 0;
 	int closest_point_id = 0;
+	std::string closest_point_type{ };
+	std::string closest_quality{ };
+	std::string closest_source{ };
 	float closest_distance = 0.0f;
 	int closest_tick = -1;
 	int pixelsurf_tick = -1;
@@ -382,4 +432,6 @@ const BruteForceResult& RunBruteForceCalculation( const BruteForceSettings& sett
 void CancelBruteForceCalculation( );
 const BruteForceProgress& GetBruteForceProgress( );
 const BruteForceResult& GetBruteForceResult( );
+
+BruteForceSettings MakeCsgo64Preset( RouteCalcPreset preset );
 }

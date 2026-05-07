@@ -3133,6 +3133,54 @@ void n_misc::impl_t::draw_visual_cosmetics( )
 		               jump_line.c_str( ) );
 	}
 
+	if ( GET_VARIABLE( g_variables.m_burmalda_mode, bool ) ) {
+		const int style = std::clamp( GET_VARIABLE( g_variables.m_burmalda_style, int ), 0, 2 );
+		const float intensity = std::clamp( GET_VARIABLE( g_variables.m_burmalda_intensity, float ), 0.1f, 1.f );
+		const auto burmalda_cfg = GET_VARIABLE( g_variables.m_burmalda_use_accent, bool )
+			                           ? accent_cfg
+			                           : GET_VARIABLE( g_variables.m_burmalda_color, c_color );
+		const float widget_w = style == 1 ? 176.f : 154.f;
+		const float widget_h = style == 2 ? 44.f : 38.f;
+		const float x = std::clamp( static_cast< float >( GET_VARIABLE( g_variables.m_burmalda_x, int ) ), 0.f,
+		                            std::max( 0.f, width - widget_w - 6.f ) );
+		const float y = std::clamp( static_cast< float >( GET_VARIABLE( g_variables.m_burmalda_y, int ) ), 0.f,
+		                            std::max( 0.f, height - widget_h - 6.f ) );
+		const ImVec2 pos( x, y );
+		const ImVec2 max( x + widget_w, y + widget_h );
+		const float pulse = 0.5f + std::sin( now * 3.4f ) * 0.5f;
+		const int accent_alpha = static_cast< int >( ( 150.f + pulse * 70.f ) * intensity );
+		const ImColor burmalda_color( burmalda_cfg[ 0 ], burmalda_cfg[ 1 ], burmalda_cfg[ 2 ], accent_alpha );
+		const ImColor soft_color( burmalda_cfg[ 0 ], burmalda_cfg[ 1 ], burmalda_cfg[ 2 ], static_cast< int >( 45.f * intensity ) );
+		const char* title = "\xD0\xB1\xD1\x83\xD1\x80\xD0\xBC\xD0\xB0\xD0\xBB\xD0\xB4\xD0\xB0";
+		const std::string state_line = std::string( grounded ? "ground " : "air " ) + std::to_string( static_cast< int >( speed ) ) + " u/s";
+
+		draw->AddRectFilled( pos, max, ImColor( 7, 7, 9, static_cast< int >( 178.f * intensity ) ), style == 1 ? 2.f : 6.f );
+		draw->AddRect( pos, max, ImColor( 255, 255, 255, static_cast< int >( 36.f * intensity ) ), style == 1 ? 2.f : 6.f );
+		draw->AddRectFilled( pos, ImVec2( max.x, pos.y + 2.f ), burmalda_color, style == 1 ? 2.f : 6.f, ImDrawFlags_RoundCornersTop );
+		draw->AddCircleFilled( ImVec2( max.x - 13.f, pos.y + 12.f ), 3.f + pulse * 1.4f, soft_color, 18 );
+		draw->AddCircleFilled( ImVec2( max.x - 13.f, pos.y + 12.f ), 2.4f, burmalda_color, 18 );
+		draw->AddText( fonts_for_gui::bolder_11, 14.f, ImVec2( pos.x + 9.f, pos.y + 6.f ), ImColor( 238, 238, 238, 242 ), title );
+		draw->AddText( fonts_for_gui::regular_11, 11.f, ImVec2( pos.x + 9.f, pos.y + 23.f ), ImColor( 176, 176, 180, 220 ), state_line.c_str( ) );
+
+		if ( style == 1 ) {
+			draw->AddLine( ImVec2( pos.x + 6.f, pos.y + 8.f ), ImVec2( pos.x + 6.f, max.y - 8.f ), burmalda_color, 1.1f );
+			draw->AddLine( ImVec2( max.x - 6.f, pos.y + 8.f ), ImVec2( max.x - 6.f, max.y - 8.f ), burmalda_color, 1.1f );
+			draw->AddText( fonts_for_gui::regular_11, 10.f, ImVec2( pos.x + 108.f, pos.y + 24.f ), ImColor( burmalda_cfg[ 0 ], burmalda_cfg[ 1 ],
+			                                                                                                  burmalda_cfg[ 2 ],
+			                                                                                                  static_cast< int >( 180.f * intensity ) ),
+			               "local visual" );
+		} else if ( style == 2 ) {
+			const float fill = std::clamp( speed / 520.f, 0.f, 1.f );
+			draw->AddRectFilled( ImVec2( pos.x + 9.f, max.y - 8.f ), ImVec2( pos.x + 9.f + ( widget_w - 18.f ) * fill, max.y - 5.f ),
+			                      burmalda_color, 2.f );
+			for ( int i = 0; i < 3; ++i ) {
+				const float bar_x = max.x - 34.f + i * 6.f;
+				const float bar_h = 8.f + std::sin( now * 4.2f + i ) * 3.f;
+				draw->AddRectFilled( ImVec2( bar_x, max.y - 13.f - bar_h ), ImVec2( bar_x + 3.f, max.y - 13.f ), soft_color, 1.f );
+			}
+		}
+	}
+
 	if ( GET_VARIABLE( g_variables.m_old_edit_vibes_text, bool ) && now < old_edit_until ) {
 		const float fade = std::clamp( ( old_edit_until - now ) / 1.55f, 0.f, 1.f );
 		const char* text = "\xD0\x9C\xD0\xBC\xD0\xBC\xD0\xBC\xD0\xBC\xD0\xBC\xD0\xBC\xD0\xBC\xD0\xBC\xD0\xB0\xD1\x80\xD0\xBC\xD0\xBE\xD0\xBA";

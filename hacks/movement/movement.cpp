@@ -188,13 +188,14 @@ int display_assist_point_index( const points_check_t& point, const int fallback_
 	return point.assist_label_index >= 0 ? point.assist_label_index : fallback_index;
 }
 
-void draw_point_index_label( const c_vector_2d& screen_position, const int point_index, const float alpha = 1.0f, const char* prefix = "P" )
+void draw_point_index_label( const c_vector_2d& screen_position, const int point_index, const float alpha = 1.0f, const char* prefix = "P",
+                             const c_color& color = c_color( 230, 255, 210, 255 ) )
 {
 	text_draw_object_t text{ };
 	text.m_font = g_render.m_fonts[ e_font_names::font_name_verdana_bd_11 ];
 	text.m_position = c_vector_2d( screen_position.m_x + 12.0f, screen_position.m_y - 18.0f );
 	text.m_text = std::string( prefix ? prefix : "" ) + std::to_string( point_index + 1 );
-	text.m_color = c_color( 230, 255, 210, static_cast< int >( 255.0f * std::clamp( alpha, 0.0f, 1.0f ) ) ).get_u32( );
+	text.m_color = color.get_u32( std::clamp( alpha, 0.0f, 1.0f ) );
 	text.m_outline_color = c_color( 0, 0, 0, static_cast< int >( 220.0f * std::clamp( alpha, 0.0f, 1.0f ) ) ).get_u32( );
 	text.m_draw_flags = e_text_flags::text_flag_outline;
 	g_render.m_draw_data.emplace_back( e_draw_type::draw_type_text, std::make_any< text_draw_object_t >( text ) );
@@ -242,6 +243,97 @@ void draw_screen_rect( const c_vector_2d& min, const c_vector_2d& max, const uns
 	rect.m_corner_rounding_flags = ImDrawFlags_RoundCornersAll;
 	rect.m_thickness = thickness;
 	g_render.m_draw_data.emplace_back( e_draw_type::draw_type_rect, std::make_any< rect_draw_object_t >( rect ) );
+}
+
+void draw_pixelsurf_style_marker( const c_vector& world_position, const c_vector_2d& screen_position, const float distance, const bool hovered,
+                                  const bool selected, const int index, const char* prefix, const char* type_label, const c_color& route_color,
+                                  const c_color& result_color, const bool hit_by_result )
+{
+	float base_radius = 11.0f;
+	if ( distance > 300.0f ) {
+		const float t = std::clamp( ( distance - 300.0f ) / 300.0f, 0.0f, 1.0f );
+		base_radius = LerpFloat( 11.0f, 4.0f, t );
+	}
+	base_radius = std::max( base_radius, 3.0f );
+
+	float alpha = 1.0f;
+	if ( distance > 1400.0f )
+		alpha = std::clamp( ( 1500.0f - distance ) / 100.0f, 0.0f, 1.0f );
+
+	const float pulse = 0.5f + 0.5f * std::sin( static_cast< float >( ImGui::GetTime( ) ) * 2.4f );
+	const float radius = base_radius * ( hovered ? 1.42f : selected ? 1.20f : 1.0f );
+	const c_color outline_color = hit_by_result ? result_color : selected ? c_color::lerp_color( route_color, c_color( 255, 255, 255, 255 ), 0.35f ) : route_color;
+	const unsigned int fill = c_color( 0, 0, 0, static_cast< int >( 105.0f * alpha ) ).get_u32( );
+	const unsigned int gray = c_color( 120, 120, 120, static_cast< int >( 210.0f * alpha ) ).get_u32( );
+	const unsigned int outline = outline_color.get_u32( alpha );
+	const unsigned int cross = c_color::lerp_color( outline_color, c_color( 255, 255, 255, 255 ), hit_by_result ? 0.25f : 0.0f ).get_u32( alpha * ( 0.45f + 0.45f * pulse ) );
+
+	g_render.m_draw_data.emplace_back( e_draw_type::draw_type_filled_circle,
+	                                   std::make_any< filled_circle_draw_object_t >( screen_position, radius, fill, 32 ) );
+
+	const int segments = 32;
+	const float angle_step = 2.0f * 3.14159f / static_cast< float >( segments );
+	for ( int j = 0; j < segments; ++j ) {
+		const float angle1 = static_cast< float >( j ) * angle_step;
+		const float angle2 = static_cast< float >( j + 1 ) * angle_step;
+		const bool gray_segment = ( angle1 >= 3.93f && angle1 <= 5.50f ) || ( angle2 >= 3.93f && angle2 <= 5.50f );
+		const c_vector_2d p1( screen_position.m_x + std::cos( angle1 ) * radius, screen_position.m_y + std::sin( angle1 ) * radius );
+		const c_vector_2d p2( screen_position.m_x + std::cos( angle2 ) * radius, screen_position.m_y + std::sin( angle2 ) * radius );
+		g_render.m_draw_data.emplace_back( e_draw_type::draw_type_line,
+		                                   std::make_any< line_draw_object_t >( p1, p2, gray_segment ? gray : outline, selected ? 1.25f : 0.65f ) );
+	}
+
+	float line_length = 4.0f * ( hovered || selected ? 1.35f : 1.0f );
+	auto screen_distance = []( const c_vector_2d& a, const c_vector_2d& b ) {
+		const float dx = a.m_x - b.m_x;
+		const float dy = a.m_y - b.m_y;
+		return std::sqrt( dx * dx + dy * dy );
+	};
+	auto get_screen_offset = [ & ]( const c_vector& offset ) {
+		c_vector_2d projected;
+		if ( g_render.world_to_screen( world_position + offset, projected ) )
+			return screen_distance( screen_position, projected );
+		return 0.0f;
+	};
+	float max_offset = std::max( { get_screen_offset( c_vector( line_length, 0.0f, 0.0f ) ),
+	                               get_screen_offset( c_vector( 0.0f, line_length, 0.0f ) ),
+	                               get_screen_offset( c_vector( 0.0f, 0.0f, line_length ) ) } );
+	if ( max_offset > radius && radius > 0.0f )
+		line_length *= radius / max_offset;
+
+	const c_vector offsets[] = { c_vector( line_length, 0.0f, 0.0f ), c_vector( 0.0f, line_length, 0.0f ), c_vector( 0.0f, 0.0f, line_length ) };
+	for ( const auto& offset : offsets ) {
+		c_vector_2d start, end;
+		if ( g_render.world_to_screen( world_position + offset, start ) && g_render.world_to_screen( world_position - offset, end ) ) {
+			g_render.m_draw_data.emplace_back( e_draw_type::draw_type_line,
+			                                   std::make_any< line_draw_object_t >( start, end, cross, hit_by_result ? 1.25f : 1.0f ) );
+		}
+	}
+
+	draw_point_index_label( screen_position, index, alpha, prefix, hit_by_result ? result_color : route_color );
+	draw_screen_text( c_vector_2d( screen_position.m_x + 10.0f, screen_position.m_y + 6.0f ), type_label,
+	                  ( hit_by_result ? result_color : route_color ).get_u32( alpha ) );
+}
+
+c_vector routecalc_render_position( const route_calc::RoutePoint& point )
+{
+	c_vector position{ point.position.x, point.position.y, point.position.z };
+	if ( point.type == route_calc::PointType::Floor )
+		position.m_z += 14.0f;
+	return position;
+}
+
+void draw_routecalc_floor_anchor( const c_vector& floor_position, const c_vector& marker_position, const c_color& color, const bool hit_by_result )
+{
+	c_vector_2d floor_screen, marker_screen;
+	if ( !g_render.world_to_screen( floor_position, floor_screen ) || !g_render.world_to_screen( marker_position, marker_screen ) )
+		return;
+
+	const unsigned int anchor_color = color.get_u32( hit_by_result ? 0.82f : 0.62f );
+	g_render.m_draw_data.emplace_back( e_draw_type::draw_type_line,
+	                                   std::make_any< line_draw_object_t >( floor_screen, marker_screen, anchor_color, hit_by_result ? 1.25f : 0.85f ) );
+	g_render.m_draw_data.emplace_back( e_draw_type::draw_type_filled_circle,
+	                                   std::make_any< filled_circle_draw_object_t >( floor_screen, hit_by_result ? 3.25f : 2.35f, anchor_color, 16 ) );
 }
 
 route_calc::RoutePoint make_route_point( const route_calc::PointType type, const c_vector& position, const c_vector& normal, const bool has_normal,
@@ -351,22 +443,33 @@ const char* routecalc_state_guess( const bool on_ground, const bool jump, const 
 
 void calculate_routecalc_combos( )
 {
-	route_calc::BruteForceSettings settings{ };
+	const int preset_index = std::clamp( GET_VARIABLE( g_variables.m_routecalc_preset, int ), 0, 2 );
+	const route_calc::RouteCalcPreset preset =
+		preset_index == 0 ? route_calc::RouteCalcPreset::CSGO_64_Normal :
+		preset_index == 2 ? route_calc::RouteCalcPreset::CSGO_64_InsaneDebug :
+		                    route_calc::RouteCalcPreset::CSGO_64_Heavy;
+	route_calc::BruteForceSettings settings = route_calc::MakeCsgo64Preset( preset );
 	settings.enabled = GET_VARIABLE( g_variables.m_routecalc_bruteforce_enabled, bool );
 	settings.start_from_current_player = GET_VARIABLE( g_variables.m_routecalc_start_from_current_player, bool );
 	settings.use_all_points = GET_VARIABLE( g_variables.m_routecalc_use_all_points, bool );
 	settings.use_hull_trace = GET_VARIABLE( g_variables.m_routecalc_use_hull_trace, bool );
 	settings.show_debug_candidates = GET_VARIABLE( g_variables.m_routecalc_show_all_debug_candidates, bool );
 	settings.show_rejects = GET_VARIABLE( g_variables.m_routecalc_show_rejects, bool );
-	settings.allow_heavy_cpu = GET_VARIABLE( g_variables.m_routecalc_allow_heavy_cpu, bool );
-	settings.tickrate = GET_VARIABLE( g_variables.m_routecalc_tickrate, int );
 	settings.max_depth = GET_VARIABLE( g_variables.m_routecalc_max_depth, int );
 	settings.max_ticks = GET_VARIABLE( g_variables.m_routecalc_max_ticks, int );
 	settings.max_sequences = GET_VARIABLE( g_variables.m_routecalc_max_sequences, int );
 	settings.max_variants = GET_VARIABLE( g_variables.m_routecalc_max_variants, int );
 	settings.hard_timeout_ms = GET_VARIABLE( g_variables.m_routecalc_hard_timeout_ms, int );
+	settings.log_top_candidates = GET_VARIABLE( g_variables.m_routecalc_log_top_candidates, int );
+	settings.log_all_candidate_summaries = GET_VARIABLE( g_variables.m_routecalc_log_all_candidate_summaries, bool );
 	settings.floor_radius = GET_VARIABLE( g_variables.m_routecalc_point_radius_floor, float );
 	settings.pixelsurf_radius = GET_VARIABLE( g_variables.m_routecalc_point_radius_pixelsurf, float );
+	const int validation_mode = std::clamp( GET_VARIABLE( g_variables.m_routecalc_pixelsurf_validation_mode, int ), 0, 2 );
+	settings.pixelsurf_validation_mode =
+		validation_mode == 1 ? route_calc::PixelSurfValidationMode::CoordinateNearDebug :
+		validation_mode == 2 ? route_calc::PixelSurfValidationMode::PixelAssistOnly :
+		                       route_calc::PixelSurfValidationMode::StrictTrace;
+	settings.manual_sequence = GET_VARIABLE( g_variables.m_routecalc_manual_combo, std::string );
 	if ( settings.enabled )
 		route_calc::RunBruteForceCalculation( settings, "hotkey" );
 }
@@ -397,8 +500,14 @@ void handle_routecalc_actions( )
 			route_calc::AddRoutePoint( point );
 		} else {
 			c_vector position, normal;
-			if ( trace_crosshair_point( position, normal ) )
-				route_calc::AddRoutePoint( make_route_point( route_calc::PointType::PixelSurf, position, normal, true, "manual_pixelsurf", -1, 0.35f ) );
+			float fraction = 1.0f;
+			if ( trace_crosshair_point( position, normal, &fraction ) ) {
+				auto point = make_route_point( route_calc::PointType::PixelSurf, position, normal, true, "manual_pixelsurf", -1, 0.35f );
+				point.source_trace_hit = true;
+				point.source_trace_fraction = fraction;
+				point.source_trace_normal = to_route_vec3( normal );
+				route_calc::AddRoutePoint( point );
+			}
 		}
 	}
 
@@ -414,19 +523,78 @@ void handle_routecalc_actions( )
 
 void render_routecalc_point_world( )
 {
-	if ( !GET_VARIABLE( g_variables.m_route_calculator, bool ) || !GET_VARIABLE( g_variables.m_routecalc_show_points, bool ) || !g_ctx.m_local )
+	const bool render_points = GET_VARIABLE( g_variables.m_routecalc_show_points, bool );
+	const bool render_result = GET_VARIABLE( g_variables.m_routecalc_render_result, bool );
+	if ( !GET_VARIABLE( g_variables.m_route_calculator, bool ) || ( !render_points && !render_result ) || !g_ctx.m_local )
 		return;
 
 	const auto& points = route_calc::GetRoutePoints( );
 	const float max_distance = std::max( 64.0f, GET_VARIABLE( g_variables.m_routecalc_max_render_distance, float ) );
 	const c_vector player_origin = g_ctx.m_local->get_origin( );
-	const unsigned int accent = c_color( 174, 255, 0, 235 ).get_u32( );
-	const unsigned int dim = c_color( 180, 180, 180, 190 ).get_u32( );
+	const auto route_color = GET_VARIABLE( g_variables.m_routecalc_point_color, c_color );
+	const auto result_color = GET_VARIABLE( g_variables.m_routecalc_result_color, c_color );
+	const auto& result = route_calc::GetBruteForceResult( );
+
+	if ( render_result && points.size( ) >= 2U ) {
+		for ( int i = 1; i < static_cast< int >( points.size( ) ); ++i ) {
+			const auto& previous = points[ i - 1 ];
+			const auto& current = points[ i ];
+			const c_vector previous_anchor{ previous.position.x, previous.position.y, previous.position.z };
+			const c_vector current_anchor{ current.position.x, current.position.y, current.position.z };
+			const c_vector previous_pos = routecalc_render_position( previous );
+			const c_vector current_pos = routecalc_render_position( current );
+			if ( player_origin.dist_to( previous_anchor ) > max_distance && player_origin.dist_to( current_anchor ) > max_distance )
+				continue;
+
+			c_vector_2d previous_screen, current_screen;
+			if ( !g_render.world_to_screen( previous_pos, previous_screen ) || !g_render.world_to_screen( current_pos, current_screen ) )
+				continue;
+
+			const bool previous_hit = i - 1 < static_cast< int >( result.point_hit_ticks.size( ) ) && result.point_hit_ticks[ i - 1 ] >= 0;
+			const bool current_hit = i < static_cast< int >( result.point_hit_ticks.size( ) ) && result.point_hit_ticks[ i ] >= 0;
+			const bool full_hit = result.status == route_calc::RouteResultStatus::SimulatedHitAllPoints;
+			const unsigned int line_color = ( full_hit || ( previous_hit && current_hit ) ) ? result_color.get_u32( 0.92f ) : c_color( 90, 90, 90, 150 ).get_u32( );
+			g_render.m_draw_data.emplace_back( e_draw_type::draw_type_line,
+			                                   std::make_any< line_draw_object_t >( previous_screen, current_screen, line_color,
+			                                                                        full_hit || ( previous_hit && current_hit ) ? 1.65f : 0.9f ) );
+		}
+
+		if ( result.status != route_calc::RouteResultStatus::Idle ) {
+			const route_calc::RoutePoint* label_point = !points.empty( ) ? &points.back( ) : nullptr;
+			if ( result.closest_point_id > 0 ) {
+				for ( const auto& point : points ) {
+					if ( point.id == result.closest_point_id ) {
+						label_point = &point;
+						break;
+					}
+				}
+			}
+
+			if ( label_point ) {
+				c_vector label_origin = routecalc_render_position( *label_point );
+				label_origin.m_z += 18.0f;
+				c_vector_2d label_screen;
+				if ( g_render.world_to_screen( label_origin, label_screen ) ) {
+					std::string label = result.status == route_calc::RouteResultStatus::SimulatedHitAllPoints
+						                    ? result.sequence
+						                    : result.status == route_calc::RouteResultStatus::CoordinateNearTarget
+						                          ? std::format( "{} -> PS ({:.2f}u)", result.closest_sequence.empty( ) ? "near" : result.closest_sequence,
+						                                         result.closest_distance )
+						                          : std::string( "no trace route" );
+					draw_screen_text( c_vector_2d( label_screen.m_x + 12.0f, label_screen.m_y - 8.0f ), label, result_color.get_u32( 0.95f ) );
+				}
+			}
+		}
+	}
+
+	if ( !render_points && !render_result )
+		return;
 
 	for ( int i = 0; i < static_cast< int >( points.size( ) ); ++i ) {
 		const auto& point = points[ i ];
-		const c_vector position{ point.position.x, point.position.y, point.position.z };
-		const float distance = player_origin.dist_to( position );
+		const c_vector anchor_position{ point.position.x, point.position.y, point.position.z };
+		const c_vector position = routecalc_render_position( point );
+		const float distance = player_origin.dist_to( anchor_position );
 		if ( distance > max_distance )
 			continue;
 
@@ -438,18 +606,12 @@ void render_routecalc_point_world( )
 		if ( InCrosshair( screen.m_x, screen.m_y, 13.0f ) )
 			route_calc::SetSelectedRoutePointIndex( i );
 
-		const float radius = selected ? 8.0f : 6.0f;
-		g_render.m_draw_data.emplace_back( e_draw_type::draw_type_filled_circle,
-		                                   std::make_any< filled_circle_draw_object_t >( screen, radius, c_color( 0, 0, 0, 185 ).get_u32( ), 24 ) );
-		g_render.m_draw_data.emplace_back( e_draw_type::draw_type_circle,
-		                                   std::make_any< circle_draw_object_t >( screen, radius, selected ? accent : dim, 24, 1.25f ) );
-
-		const std::string id_text = std::to_string( point.id );
-		const ImVec2 id_size = g_render.m_fonts[ e_font_names::font_name_verdana_bd_11 ]->CalcTextSizeA(
-			g_render.m_fonts[ e_font_names::font_name_verdana_bd_11 ]->FontSize, FLT_MAX, 0.0f, id_text.c_str( ) );
-		draw_screen_text( c_vector_2d( screen.m_x - id_size.x * 0.5f, screen.m_y - id_size.y * 0.5f ), id_text,
-		                  selected ? accent : c_color( 235, 235, 235, 235 ).get_u32( ) );
-		draw_screen_text( c_vector_2d( screen.m_x + 10.0f, screen.m_y + 6.0f ), route_calc::ToString( point.type ), selected ? accent : dim );
+		const bool hit_by_result = i < static_cast< int >( result.point_hit_ticks.size( ) ) && result.point_hit_ticks[ i ] >= 0;
+		const char* type_label = point.type == route_calc::PointType::PixelSurf ? "route ps" : "route floor";
+		if ( point.type == route_calc::PointType::Floor )
+			draw_routecalc_floor_anchor( anchor_position, position, hit_by_result ? result_color : route_color, hit_by_result );
+		draw_pixelsurf_style_marker( position, screen, distance, InCrosshair( screen.m_x, screen.m_y, 13.0f ), selected, point.id - 1, "R",
+		                             type_label, route_color, result_color, hit_by_result );
 	}
 }
 
@@ -491,7 +653,7 @@ void render_routecalc_helper_boxes( )
 
 void render_routecalc_combo_box( )
 {
-	if ( !GET_VARIABLE( g_variables.m_route_calculator, bool ) )
+	if ( !GET_VARIABLE( g_variables.m_route_calculator, bool ) || !GET_VARIABLE( g_variables.m_routecalc_render_result, bool ) )
 		return;
 
 	const auto* primary = route_calc::GetPrimaryCombo( );

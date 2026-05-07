@@ -2,7 +2,7 @@
 <Project>
   <ProjectOutputs>
     <ProjectOutput>
-      <FullPath>Y:\src\release\fart.dll</FullPath>
+      <FullPath>Y:\src\release_codex\fart.dll</FullPath>
     </ProjectOutput>
   </ProjectOutputs>
   <ContentFiles />

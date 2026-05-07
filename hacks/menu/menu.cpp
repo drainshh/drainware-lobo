@@ -1970,6 +1970,18 @@ void n_menu::impl_t::on_end_scene( )
 					checkbox( "schizo vision", &GET_VARIABLE( g_variables.m_schizo_vision, bool ), false, true, { 200, -1 }, []() {
 						slider_float( "glitch intensity", &GET_VARIABLE( g_variables.m_schizo_vision_intensity, float ), 0.05f, 1.f, "%.2f" );
 					} );
+					checkbox( "\xD0\xB1\xD1\x83\xD1\x80\xD0\xBC\xD0\xB0\xD0\xBB\xD0\xB4\xD0\xB0 mode", &GET_VARIABLE( g_variables.m_burmalda_mode, bool ), false, true, { 200, -1 }, []() {
+						const char* burmalda_styles[] = { "badge", "oldschool", "warning" };
+						combo( "style##burmalda", GET_VARIABLE( g_variables.m_burmalda_style, int ), burmalda_styles, IM_ARRAYSIZE( burmalda_styles ) );
+						slider_int( "x##burmalda", &GET_VARIABLE( g_variables.m_burmalda_x, int ), 0, g_ctx.m_width, "%d px" );
+						slider_int( "y##burmalda", &GET_VARIABLE( g_variables.m_burmalda_y, int ), 0, g_ctx.m_height, "%d px" );
+						slider_float( "intensity##burmalda", &GET_VARIABLE( g_variables.m_burmalda_intensity, float ), 0.1f, 1.f, "%.2f" );
+						checkbox( "use accent##burmalda", &GET_VARIABLE( g_variables.m_burmalda_use_accent, bool ) );
+						if ( !GET_VARIABLE( g_variables.m_burmalda_use_accent, bool ) ) {
+							ImGui::Text( "burmalda color" );
+							ImGui::ColorEdit4( "##burmalda color", &GET_VARIABLE( g_variables.m_burmalda_color, c_color ), color_picker_alpha_flags );
+						}
+					} );
 					checkbox( "npc roast", &GET_VARIABLE( g_variables.m_npc_roast, bool ) );
 					checkbox( "based radar", &GET_VARIABLE( g_variables.m_based_radar, bool ) );
 					checkbox( "cringe detector", &GET_VARIABLE( g_variables.m_cringe_detector, bool ) );
@@ -3329,24 +3341,51 @@ void n_menu::impl_t::on_end_scene( )
 			};
 
 			auto calculate_combos = []( ) {
-				route_calc::BruteForceSettings settings{ };
+				const int preset_index = std::clamp( GET_VARIABLE( g_variables.m_routecalc_preset, int ), 0, 2 );
+				const route_calc::RouteCalcPreset preset =
+					preset_index == 0 ? route_calc::RouteCalcPreset::CSGO_64_Normal :
+					preset_index == 2 ? route_calc::RouteCalcPreset::CSGO_64_InsaneDebug :
+					                    route_calc::RouteCalcPreset::CSGO_64_Heavy;
+
+				route_calc::BruteForceSettings settings = route_calc::MakeCsgo64Preset( preset );
 				settings.enabled = GET_VARIABLE( g_variables.m_routecalc_bruteforce_enabled, bool );
 				settings.start_from_current_player = GET_VARIABLE( g_variables.m_routecalc_start_from_current_player, bool );
 				settings.use_all_points = GET_VARIABLE( g_variables.m_routecalc_use_all_points, bool );
 				settings.use_hull_trace = GET_VARIABLE( g_variables.m_routecalc_use_hull_trace, bool );
 				settings.show_debug_candidates = GET_VARIABLE( g_variables.m_routecalc_show_all_debug_candidates, bool );
 				settings.show_rejects = GET_VARIABLE( g_variables.m_routecalc_show_rejects, bool );
-				settings.allow_heavy_cpu = GET_VARIABLE( g_variables.m_routecalc_allow_heavy_cpu, bool );
-				settings.tickrate = GET_VARIABLE( g_variables.m_routecalc_tickrate, int );
 				settings.max_depth = GET_VARIABLE( g_variables.m_routecalc_max_depth, int );
 				settings.max_ticks = GET_VARIABLE( g_variables.m_routecalc_max_ticks, int );
 				settings.max_sequences = GET_VARIABLE( g_variables.m_routecalc_max_sequences, int );
 				settings.max_variants = GET_VARIABLE( g_variables.m_routecalc_max_variants, int );
 				settings.hard_timeout_ms = GET_VARIABLE( g_variables.m_routecalc_hard_timeout_ms, int );
+				settings.log_top_candidates = GET_VARIABLE( g_variables.m_routecalc_log_top_candidates, int );
+				settings.log_all_candidate_summaries = GET_VARIABLE( g_variables.m_routecalc_log_all_candidate_summaries, bool );
 				settings.floor_radius = GET_VARIABLE( g_variables.m_routecalc_point_radius_floor, float );
 				settings.pixelsurf_radius = GET_VARIABLE( g_variables.m_routecalc_point_radius_pixelsurf, float );
+				const int validation_mode = std::clamp( GET_VARIABLE( g_variables.m_routecalc_pixelsurf_validation_mode, int ), 0, 2 );
+				settings.pixelsurf_validation_mode =
+					validation_mode == 1 ? route_calc::PixelSurfValidationMode::CoordinateNearDebug :
+					validation_mode == 2 ? route_calc::PixelSurfValidationMode::PixelAssistOnly :
+					                       route_calc::PixelSurfValidationMode::StrictTrace;
+				settings.manual_sequence = GET_VARIABLE( g_variables.m_routecalc_manual_combo, std::string );
 				if ( settings.enabled )
 					route_calc::RunBruteForceCalculation( settings, "menu" );
+			};
+
+			auto apply_preset_defaults = []( const route_calc::RouteCalcPreset preset ) {
+				const route_calc::BruteForceSettings defaults = route_calc::MakeCsgo64Preset( preset );
+				GET_VARIABLE( g_variables.m_routecalc_max_depth, int ) = defaults.max_depth;
+				GET_VARIABLE( g_variables.m_routecalc_max_ticks, int ) = defaults.max_ticks;
+				GET_VARIABLE( g_variables.m_routecalc_max_sequences, int ) = defaults.max_sequences;
+				GET_VARIABLE( g_variables.m_routecalc_max_variants, int ) = defaults.max_variants;
+				GET_VARIABLE( g_variables.m_routecalc_hard_timeout_ms, int ) = defaults.hard_timeout_ms;
+				GET_VARIABLE( g_variables.m_routecalc_point_radius_floor, float ) = defaults.floor_radius;
+				GET_VARIABLE( g_variables.m_routecalc_point_radius_pixelsurf, float ) = defaults.pixelsurf_radius;
+				GET_VARIABLE( g_variables.m_routecalc_allow_heavy_cpu, bool ) = defaults.allow_heavy_cpu;
+				GET_VARIABLE( g_variables.m_routecalc_tickrate, int ) = defaults.tickrate;
+				GET_VARIABLE( g_variables.m_routecalc_use_hull_trace, bool ) = defaults.use_hull_trace;
+				GET_VARIABLE( g_variables.m_routecalc_pixelsurf_validation_mode, int ) = 0;
 			};
 
 			if ( routes.empty( ) )
@@ -3378,33 +3417,120 @@ void n_menu::impl_t::on_end_scene( )
 					ImGui::TextWrapped( "assist candidate: P%d", point->source_pixel_assist_index + 1 );
 			};
 
+			const int preset_index = std::clamp( GET_VARIABLE( g_variables.m_routecalc_preset, int ), 0, 2 );
+			const route_calc::RouteCalcPreset preset =
+				preset_index == 0 ? route_calc::RouteCalcPreset::CSGO_64_Normal :
+				preset_index == 2 ? route_calc::RouteCalcPreset::CSGO_64_InsaneDebug :
+				                    route_calc::RouteCalcPreset::CSGO_64_Heavy;
+			static int last_preset_index = -1;
+			if ( preset_index != last_preset_index ) {
+				apply_preset_defaults( preset );
+				last_preset_index = preset_index;
+			}
+
+			static bool show_advanced = false;
+
 			ImGui::SetCursorPos( ImVec2( 150.0f, 10.0f ) );
-			child( "master", ImVec2( 230.0f, 185.0f ), [ & ]( ) {
+			child( "master", ImVec2( 230.0f, 225.0f ), [ & ]( ) {
 				checkbox( "route calculator", &GET_VARIABLE( g_variables.m_route_calculator, bool ) );
 				help_marker( "Local/debug calculator only. It stores separate route points, never mutates usercmds, and never auto-plays routes." );
 				checkbox( "bruteforce enabled", &GET_VARIABLE( g_variables.m_routecalc_bruteforce_enabled, bool ) );
 				checkbox( "start from current player", &GET_VARIABLE( g_variables.m_routecalc_start_from_current_player, bool ) );
 				checkbox( "use all points", &GET_VARIABLE( g_variables.m_routecalc_use_all_points, bool ) );
-				checkbox( "use hull trace", &GET_VARIABLE( g_variables.m_routecalc_use_hull_trace, bool ) );
-				checkbox( "show all debug candidates", &GET_VARIABLE( g_variables.m_routecalc_show_all_debug_candidates, bool ) );
-				checkbox( "show rejects", &GET_VARIABLE( g_variables.m_routecalc_show_rejects, bool ) );
+				checkbox( "render routecalc points", &GET_VARIABLE( g_variables.m_routecalc_show_points, bool ) );
+				checkbox( "render calculated route", &GET_VARIABLE( g_variables.m_routecalc_render_result, bool ) );
+				const char* preset_names[] = { "CS:GO 64 Normal", "CS:GO 64 Heavy", "Insane Debug" };
+				int preset_value = preset_index;
+				combo( "preset", preset_value, preset_names, IM_ARRAYSIZE( preset_names ) );
+				GET_VARIABLE( g_variables.m_routecalc_preset, int ) = std::clamp( preset_value, 0, 2 );
+				checkbox( "advanced/debug", &show_advanced );
+				if ( button( "calculate", ImVec2( 190, 0 ) ) )
+					calculate_combos( );
+				if ( button( "cancel", ImVec2( 190, 0 ) ) )
+					route_calc::CancelBruteForceCalculation( );
+
+				ImGui::Separator( );
+				const auto& progress = route_calc::GetBruteForceProgress( );
+				const auto& result = route_calc::GetBruteForceResult( );
+				ImGui::TextWrapped( "Status: %s", progress.running ? "calculating..." : route_calc::ToString( result.status ) );
+				if ( progress.running )
+					ImGui::TextWrapped( "Progress: %d variants", progress.variants_tested );
+				else if ( result.status != route_calc::RouteResultStatus::Idle )
+					ImGui::TextWrapped( "Elapsed: %d ms", result.elapsed_ms );
+				if ( result.status == route_calc::RouteResultStatus::SimulatedHitAllPoints ) {
+					ImGui::TextWrapped( "Best: %s", result.sequence.c_str( ) );
+					ImGui::TextWrapped( "Hit: %d/%d | PS tick %d", result.hit_points, result.total_points, result.pixelsurf_tick );
+				} else if ( result.status == route_calc::RouteResultStatus::CoordinateNearTarget ) {
+					ImGui::TextWrapped( "No trace-confirmed route found" );
+					if ( !result.manual_sequence.empty( ) )
+						ImGui::TextWrapped( "Manual: %s", result.manual_sequence.c_str( ) );
+					ImGui::TextWrapped( "Best near: %s%s", result.closest_sequence.empty( ) ? "unknown" : result.closest_sequence.c_str( ),
+					                    result.closest_point_type == "pixelsurf" ? " -> PS" : "" );
+					ImGui::TextWrapped( "Closest to %s #%d: %.3fu at tick %d",
+					                    result.closest_point_type.empty( ) ? "point" : result.closest_point_type.c_str( ), result.closest_point_id,
+					                    result.closest_distance, result.closest_tick );
+					if ( !result.closest_quality.empty( ) )
+						ImGui::TextWrapped( "Quality: %s", result.closest_quality.c_str( ) );
+					if ( !result.manual_closest_sequence.empty( ) ) {
+						ImGui::Separator( );
+						ImGui::TextWrapped( "Manual near: %s -> PS", result.manual_closest_sequence.c_str( ) );
+						ImGui::TextWrapped( "Manual closest: #%d %.3fu at tick %d", result.manual_closest_point_id,
+						                    result.manual_closest_distance, result.manual_closest_tick );
+						ImGui::TextWrapped( "Manual variants: legal %d / blocked %d", result.manual_legal_variants,
+						                    result.manual_illegal_variants );
+						if ( !result.manual_issue.empty( ) )
+							ImGui::TextWrapped( "Manual issue: %s", result.manual_issue.c_str( ) );
+					}
+					if ( result.closest_source == "manual_pixelsurf" || result.manual_closest_source == "manual_pixelsurf" )
+						ImGui::TextWrapped( "Suggestion: use a scanline-imported PS point, CoordinateNearDebug, or Heavy preset for tuning." );
+					ImGui::TextWrapped( "Reason: %s", result.reason.c_str( ) );
+				} else if ( result.status != route_calc::RouteResultStatus::Idle ) {
+					ImGui::TextWrapped( "Best: no simulated route found" );
+					if ( !result.manual_sequence.empty( ) )
+						ImGui::TextWrapped( "Manual: %s", result.manual_sequence.c_str( ) );
+					if ( !result.manual_closest_sequence.empty( ) )
+						ImGui::TextWrapped( "Manual near: %s -> PS | %.3fu t%d", result.manual_closest_sequence.c_str( ),
+						                    result.manual_closest_distance, result.manual_closest_tick );
+					ImGui::TextWrapped( "Reached: %d/%d | Closest: #%d %.2fu t%d", result.hit_points, result.total_points, result.closest_point_id,
+					                    result.closest_distance, result.closest_tick );
+					ImGui::TextWrapped( "Reason: %s", result.reason.c_str( ) );
+				}
 			} );
 
-			ImGui::SetCursorPos( ImVec2( 150.0f, 210.0f ) );
-			child( "preference", ImVec2( 230.0f, 275.0f ), [ & ]( ) {
-				checkbox( "allow heavy cpu", &GET_VARIABLE( g_variables.m_routecalc_allow_heavy_cpu, bool ) );
-				int brute_tickrate_index = GET_VARIABLE( g_variables.m_routecalc_tickrate, int ) == 128 ? 1 : 0;
-				const char* brute_tickrates[] = { "64 tick", "128 tick" };
-				combo( "tickrate", brute_tickrate_index, brute_tickrates, IM_ARRAYSIZE( brute_tickrates ) );
-				GET_VARIABLE( g_variables.m_routecalc_tickrate, int ) = brute_tickrate_index == 1 ? 128 : 64;
-				slider_int( "max depth", &GET_VARIABLE( g_variables.m_routecalc_max_depth, int ), 1, 5, "%d" );
-				slider_int( "max ticks", &GET_VARIABLE( g_variables.m_routecalc_max_ticks, int ), 64, 512, "%d" );
-				slider_int( "max sequences", &GET_VARIABLE( g_variables.m_routecalc_max_sequences, int ), 128, 20000, "%d" );
-				slider_int( "max variants", &GET_VARIABLE( g_variables.m_routecalc_max_variants, int ), 1000, 200000, "%d" );
-				slider_int( "timeout ms", &GET_VARIABLE( g_variables.m_routecalc_hard_timeout_ms, int ), 500, 10000, "%d" );
-				slider_float( "floor radius", &GET_VARIABLE( g_variables.m_routecalc_point_radius_floor, float ), 4.f, 48.f, "%.1f" );
-				slider_float( "pixelsurf radius", &GET_VARIABLE( g_variables.m_routecalc_point_radius_pixelsurf, float ), 2.f, 24.f, "%.1f" );
+			ImGui::SetCursorPos( ImVec2( 150.0f, 250.0f ) );
+			child( "advanced", ImVec2( 230.0f, 235.0f ), [ & ]( ) {
+				if ( !show_advanced ) {
+					ImGui::TextWrapped( "advanced/debug settings collapsed" );
+					return;
+				}
+				if ( button( "reset to preset", ImVec2( 190, 0 ) ) )
+					apply_preset_defaults( preset );
+				checkbox( "use hull trace", &GET_VARIABLE( g_variables.m_routecalc_use_hull_trace, bool ) );
+				checkbox( "routecalc scanline", &GET_VARIABLE( g_variables.m_routecalc_scanline, bool ) );
+				checkbox( "show assist candidates", &GET_VARIABLE( g_variables.m_routecalc_show_assist_candidates, bool ) );
+				checkbox( "helper boxes", &GET_VARIABLE( g_variables.m_routecalc_helper_boxes, bool ) );
+				checkbox( "show all debug candidates", &GET_VARIABLE( g_variables.m_routecalc_show_all_debug_candidates, bool ) );
+				checkbox( "show rejects", &GET_VARIABLE( g_variables.m_routecalc_show_rejects, bool ) );
+				int validation_mode = std::clamp( GET_VARIABLE( g_variables.m_routecalc_pixelsurf_validation_mode, int ), 0, 2 );
+				const char* validation_modes[] = { "StrictTrace", "CoordinateNearDebug", "PixelAssistOnly" };
+				combo( "ps validation", validation_mode, validation_modes, IM_ARRAYSIZE( validation_modes ) );
+				GET_VARIABLE( g_variables.m_routecalc_pixelsurf_validation_mode, int ) = std::clamp( validation_mode, 0, 2 );
+				slider_int( "max depth", &GET_VARIABLE( g_variables.m_routecalc_max_depth, int ), 1, 6, "%d" );
+				slider_int( "max ticks", &GET_VARIABLE( g_variables.m_routecalc_max_ticks, int ), 64, 768, "%d" );
+				slider_int( "max sequences", &GET_VARIABLE( g_variables.m_routecalc_max_sequences, int ), 128, 25000, "%d" );
+				slider_int( "max variants", &GET_VARIABLE( g_variables.m_routecalc_max_variants, int ), 1000, 250000, "%d" );
+				slider_int( "timeout ms", &GET_VARIABLE( g_variables.m_routecalc_hard_timeout_ms, int ), 500, 12000, "%d" );
+				slider_int( "log top candidates", &GET_VARIABLE( g_variables.m_routecalc_log_top_candidates, int ), 0, 64, "%d" );
+				checkbox( "log all summaries", &GET_VARIABLE( g_variables.m_routecalc_log_all_candidate_summaries, bool ) );
+				slider_float( "floor radius", &GET_VARIABLE( g_variables.m_routecalc_point_radius_floor, float ), 4.f, 64.f, "%.1f" );
+				slider_float( "pixelsurf radius", &GET_VARIABLE( g_variables.m_routecalc_point_radius_pixelsurf, float ), 2.f, 32.f, "%.1f" );
 				slider_float( "max render distance", &GET_VARIABLE( g_variables.m_routecalc_max_render_distance, float ), 100.f, 3000.f, "%.0f" );
+				ImGui::Text( "route point color" );
+				ImGui::SameLine( );
+				ImGui::ColorEdit4( "##routecalc point color", &GET_VARIABLE( g_variables.m_routecalc_point_color, c_color ), color_picker_alpha_flags );
+				ImGui::Text( "calculated route color" );
+				ImGui::SameLine( );
+				ImGui::ColorEdit4( "##routecalc result color", &GET_VARIABLE( g_variables.m_routecalc_result_color, c_color ), color_picker_alpha_flags );
 			} );
 
 			ImGui::SetCursorPos( ImVec2( 390.0f, 10.0f ) );
@@ -3451,40 +3577,8 @@ void n_menu::impl_t::on_end_scene( )
 				keybind( "delete point##routecalc", &GET_VARIABLE( g_variables.m_routecalc_delete_point_key, key_bind_t ) );
 				ImGui::Text( "clear all points" );
 				keybind( "clear all points##routecalc", &GET_VARIABLE( g_variables.m_routecalc_clear_points_key, key_bind_t ) );
-				if ( button( "calculate route", ImVec2( 190, 0 ) ) )
-					calculate_combos( );
 				if ( button( "delete selected / last", ImVec2( 190, 0 ) ) )
 					route_calc::DeleteSelectedOrLastRoutePoint( );
-
-				ImGui::Separator( );
-				const auto& progress = route_calc::GetBruteForceProgress( );
-				const auto& result = route_calc::GetBruteForceResult( );
-				ImGui::TextWrapped( "Status: %s", progress.running ? "calculating..." : route_calc::ToString( result.status ) );
-				ImGui::TextWrapped( "Progress: %d variants | hits %d | rejects %d", progress.variants_tested, progress.hits_found,
-				                    progress.rejected_count );
-				ImGui::TextWrapped( "Elapsed: %d ms", progress.elapsed_ms > 0 ? progress.elapsed_ms : result.elapsed_ms );
-				if ( button( "cancel brute force", ImVec2( 190, 0 ) ) )
-					route_calc::CancelBruteForceCalculation( );
-
-				ImGui::Separator( );
-				if ( result.status == route_calc::RouteResultStatus::SimulatedHitAllPoints ) {
-					ImGui::TextWrapped( "Best: %s", result.sequence.c_str( ) );
-					ImGui::TextWrapped( "Hit: %d/%d points", result.hit_points, result.total_points );
-					ImGui::TextWrapped( "Pixelsurf tick: %d", result.pixelsurf_tick );
-					ImGui::TextWrapped( "Confidence: %s", result.trace_confirmed ? "simulated hit + hull trace" : "simulated hit / approximate hull hit" );
-					if ( progress.hidden_candidates > 0 )
-						ImGui::TextWrapped( "Hidden candidates: %d", progress.hidden_candidates );
-				} else if ( result.status != route_calc::RouteResultStatus::Idle ) {
-					ImGui::TextWrapped( "No simulated route found" );
-					ImGui::TextWrapped( "Closest: %s", result.closest_sequence.c_str( ) );
-					ImGui::TextWrapped( "Reached: %d/%d", result.hit_points, result.total_points );
-					ImGui::TextWrapped( "Closest point: #%d", result.closest_point_id );
-					ImGui::TextWrapped( "Closest distance: %.2f at tick %d", result.closest_distance, result.closest_tick );
-					ImGui::TextWrapped( "Reason: %s", result.reason.c_str( ) );
-				} else {
-					ImGui::TextWrapped( "No calculation yet" );
-					ImGui::TextWrapped( "Press calculate to brute-force from current player through all placed points." );
-				}
 			} );
 		}
 

@@ -1230,9 +1230,52 @@ struct BruteSimState {
 struct BrutePlan {
 	std::vector< MovementAction > actions{ };
 	int speed_sample = 250;
+	bool use_current_view_yaw = false;
+	float current_view_yaw_deg = 0.0f;
+	float yaw_offset_deg = 0.0f;
+	float forwardmove = 450.0f;
+	float sidemove = 0.0f;
 	int delay_ticks = 0;
 	int minijump_release_tick = 2;
 	int crouchjump_lead_ticks = 4;
+	std::string variant_label{ };
+};
+
+struct TraceProbeResult {
+	std::string name{ };
+	bool hit = false;
+	float fraction = 1.0f;
+	float distance = std::numeric_limits< float >::max( );
+	float normal_dot = 0.0f;
+	Vec3 normal{ };
+};
+
+enum class PointHitQuality : std::uint8_t {
+	None,
+	CoordinateNear,
+	HullNear,
+	TraceConfirmed,
+	PixelSurfAssistConfirmed,
+};
+
+enum class FloorHitQuality : std::uint8_t {
+	None,
+	FloorCoordinateNear,
+	FloorTraceConfirmed,
+	FloorConfirmed,
+};
+
+struct PointHitRecord {
+	int point_id = 0;
+	PointType type = PointType::Floor;
+	int variants_hit = 1;
+	int tick = -1;
+	float distance = std::numeric_limits< float >::max( );
+	float distance2d = std::numeric_limits< float >::max( );
+	float z_delta = 0.0f;
+	std::string quality{ };
+	std::string source{ };
+	std::string reason{ };
 };
 
 struct BruteCandidateResult {
@@ -1248,7 +1291,77 @@ struct BruteCandidateResult {
 	float score = 0.0f;
 	bool trace_confirmed = false;
 	bool approximate_hull_hit = false;
+	PointHitQuality best_pixelsurf_quality = PointHitQuality::None;
+	PointHitQuality final_hit_quality = PointHitQuality::None;
+	int executed_actions = 0;
+	PointHitRecord best_near_record{ };
+	std::vector< PointHitRecord > point_hits{ };
+	std::string best_near_proof{ };
+	std::string best_near_approach_proof{ };
+	std::string best_near_trace_proof{ };
+	std::string pixelsurf_hit_proof{ };
 	std::string reason{ };
+};
+
+struct PixelSurfContactDebug {
+	PointHitQuality quality = PointHitQuality::None;
+	bool coordinate_near = false;
+	bool wall_like = false;
+	bool approach_ok = true;
+	bool trace_hit = false;
+	bool trace_confirmed = false;
+	bool pixelassist_valid = false;
+	float direct_distance = std::numeric_limits< float >::max( );
+	float approach_dot = 0.0f;
+	float velocity_approach_dot = 0.0f;
+	float incoming_dot = 0.0f;
+	float approach_threshold = 0.35f;
+	float horizontal_speed = 0.0f;
+	float plane_distance = 0.0f;
+	bool plane_overlap = false;
+	float trace_fraction = 1.0f;
+	float trace_distance = std::numeric_limits< float >::max( );
+	float normal_dot = 0.0f;
+	Vec3 trace_normal{ };
+	std::vector< TraceProbeResult > probes{ };
+	std::string reason{ };
+};
+
+struct FloorContactDebug {
+	bool coordinate_near = false;
+	bool trace_hit = false;
+	bool trace_floor_like = false;
+	bool trace_confirmed = false;
+	FloorHitQuality quality = FloorHitQuality::None;
+	float distance2d = std::numeric_limits< float >::max( );
+	float z_delta = 0.0f;
+	float abs_z_delta = std::numeric_limits< float >::max( );
+	float trace_end_z = 0.0f;
+	float trace_fraction = 1.0f;
+	std::string reason{ };
+};
+
+struct SequenceSummary {
+	std::string text{ };
+	int variants = 0;
+	int hits = 0;
+	int coordinate_near = 0;
+	int partial = 0;
+	int rejects = 0;
+	float best_closest = std::numeric_limits< float >::max( );
+	int best_tick = -1;
+	float best_score = 0.0f;
+	RouteResultStatus best_status = RouteResultStatus::Rejected;
+	std::string best_reason{ };
+	PointHitRecord best_near{ };
+	std::vector< PointHitRecord > point_hit_summaries{ };
+	int legal_variants = 0;
+	int illegal_variants = 0;
+	int no_second_jump_window = 0;
+	float best_legal_closest = std::numeric_limits< float >::max( );
+	float best_illegal_closest = std::numeric_limits< float >::max( );
+	std::string best_legal_reason{ };
+	std::string best_illegal_reason{ };
 };
 
 std::string action_text_upper( const MovementAction action )
@@ -1289,10 +1402,114 @@ std::string brute_sequence_text( const std::vector< MovementAction >& actions, c
 	return text.empty( ) ? "NO_ACTION" : text;
 }
 
+const char* point_hit_quality_text( const PointHitQuality quality )
+{
+	switch ( quality ) {
+	case PointHitQuality::None:
+		return "none";
+	case PointHitQuality::CoordinateNear:
+		return "coordinate_near";
+	case PointHitQuality::HullNear:
+		return "hull_near";
+	case PointHitQuality::TraceConfirmed:
+		return "trace_confirmed";
+	case PointHitQuality::PixelSurfAssistConfirmed:
+		return "pixelassist_confirmed";
+	default:
+		return "unknown";
+	}
+}
+
+const char* floor_hit_quality_text( const FloorHitQuality quality )
+{
+	switch ( quality ) {
+	case FloorHitQuality::FloorCoordinateNear:
+		return "FloorCoordinateNear";
+	case FloorHitQuality::FloorTraceConfirmed:
+		return "FloorTraceConfirmed";
+	case FloorHitQuality::FloorConfirmed:
+		return "FloorConfirmed";
+	default:
+		return "None";
+	}
+}
+
+const char* validation_mode_text( const PixelSurfValidationMode mode )
+{
+	switch ( mode ) {
+	case PixelSurfValidationMode::StrictTrace:
+		return "StrictTrace";
+	case PixelSurfValidationMode::CoordinateNearDebug:
+		return "CoordinateNearDebug";
+	case PixelSurfValidationMode::PixelAssistOnly:
+		return "PixelAssistOnly";
+	default:
+		return "StrictTrace";
+	}
+}
+
+std::string trace_probe_summary( const TraceProbeResult& probe )
+{
+	std::ostringstream out;
+	out << "probe=" << probe.name << " trace_hit=" << ( probe.hit ? 1 : 0 )
+	    << " fraction=" << probe.fraction << " normal=" << vec3_string( probe.normal )
+	    << " normal_dot=" << probe.normal_dot << " dist=" << probe.distance;
+	return out.str( );
+}
+
+int brute_status_rank( const RouteResultStatus status )
+{
+	switch ( status ) {
+	case RouteResultStatus::SimulatedHitAllPoints:
+		return 7000;
+	case RouteResultStatus::SimulatedFinalPixelsurfHit:
+		return 6200;
+	case RouteResultStatus::TraceConfirmedContact:
+		return 5600;
+	case RouteResultStatus::CoordinateNearTarget:
+		return 3500;
+	case RouteResultStatus::NearMiss:
+		return 2500;
+	case RouteResultStatus::SimulatedPartialHit:
+		return 1500;
+	case RouteResultStatus::TimedOut:
+		return 300;
+	case RouteResultStatus::Rejected:
+		return 0;
+	default:
+		return 100;
+	}
+}
+
+int point_quality_rank( const PointHitQuality quality )
+{
+	switch ( quality ) {
+	case PointHitQuality::TraceConfirmed:
+		return 4;
+	case PointHitQuality::PixelSurfAssistConfirmed:
+		return 3;
+	case PointHitQuality::HullNear:
+		return 2;
+	case PointHitQuality::CoordinateNear:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
 Settings brute_settings_for( const BruteForceSettings& brute )
 {
 	Settings settings{ };
 	settings.tick_interval = brute.tickrate == 128 ? 1.0f / 128.0f : 1.0f / 64.0f;
+	settings.gravity = 800.0f;
+	settings.ent_gravity = 1.0f;
+	settings.jump_impulse = 301.993377f;
+	settings.ground_factor = 1.0f;
+	settings.duck_origin_shift = 9.0f;
+	settings.in_air_unduck_origin_shift = -9.0f;
+	settings.duck_speed = 8.0f;
+	settings.duck_step_scale = 0.8f;
+	settings.ground_z = 0.0f;
 	settings.max_ticks = std::max( 1, brute.max_ticks );
 	return settings;
 }
@@ -1338,43 +1555,190 @@ bool matches_pixelsurf_trace( const Vec3& from, const Vec3& to, const RoutePoint
 	return std::fabs( normal_dot ) >= 0.78f && hit_distance <= 48.0f;
 }
 
-bool hit_floor_point( const BruteSimState& state, const RoutePoint& point, const BruteForceSettings& settings )
+FloorContactDebug evaluate_floor_contact( const BruteSimState& state, const RoutePoint& point, const BruteForceSettings& settings )
 {
-	if ( point.type != PointType::Floor )
-		return false;
+	FloorContactDebug debug{ };
+	if ( point.type != PointType::Floor ) {
+		debug.reason = "not_floor_point";
+		return debug;
+	}
 
-	const float horizontal = distance_2d_between( state.origin, point.position );
-	const float vertical = std::fabs( state.origin.z - point.position.z );
-	if ( horizontal > std::max( 2.0f, settings.floor_radius ) )
-		return false;
+	const float radius = std::max( 2.0f, settings.floor_radius );
+	const float z_tolerance = std::max( 1.0f, settings.floor_z_tolerance );
+	debug.distance2d = distance_2d_between( state.origin, point.position );
+	debug.z_delta = state.origin.z - point.position.z;
+	debug.abs_z_delta = std::fabs( debug.z_delta );
+	debug.coordinate_near = debug.distance2d <= radius && debug.abs_z_delta <= z_tolerance;
+	if ( !debug.coordinate_near ) {
+		if ( debug.distance2d > radius )
+			debug.reason = "radius_too_small";
+		else
+			debug.reason = "z_delta_too_high";
+		return debug;
+	}
 
-	if ( vertical <= 8.0f )
-		return true;
+	if ( settings.use_hull_trace && g_interfaces.m_engine_trace && g_interfaces.m_engine_client && g_interfaces.m_engine_client->is_in_game( ) ) {
+		const Vec3 from = { state.origin.x, state.origin.y, state.origin.z + 4.0f };
+		const Vec3 to = { state.origin.x, state.origin.y, state.origin.z - 48.0f };
+		trace_t trace{ };
+		trace_world_hull( from, to, state.ducked ? 54.0f : 72.0f, trace );
+		debug.trace_hit = trace.did_hit( );
+		debug.trace_fraction = trace.m_fraction;
+		debug.trace_end_z = from_source_vector( trace.m_end ).z;
+		debug.trace_floor_like = debug.trace_hit && floor_like_normal( true, from_source_vector( trace.m_plane.m_normal ) );
+		debug.trace_confirmed = debug.trace_floor_like && std::fabs( debug.trace_end_z - point.position.z ) <= std::max( 16.0f, z_tolerance * 2.0f );
+	}
 
-	const bool crossing_down = state.previous_origin.z >= point.position.z && state.origin.z <= point.position.z && state.velocity.z <= 0.0f;
-	return crossing_down && vertical <= std::max( 14.0f, settings.floor_radius );
+	if ( state.on_ground )
+		debug.quality = FloorHitQuality::FloorConfirmed;
+	else if ( debug.trace_confirmed )
+		debug.quality = FloorHitQuality::FloorTraceConfirmed;
+	else if ( debug.coordinate_near )
+		debug.quality = FloorHitQuality::FloorCoordinateNear;
+	debug.reason = debug.trace_confirmed ? "coordinate_near_trace_confirmed" : "coordinate_near_unconfirmed";
+	return debug;
 }
 
-bool hit_pixelsurf_point( const BruteSimState& state, const RoutePoint& point, const BruteForceSettings& settings, bool& trace_confirmed )
+bool pixelsurf_source_is_assist( const RoutePoint& point )
 {
-	trace_confirmed = false;
-	if ( point.type != PointType::PixelSurf || !wall_like_normal( point.has_normal, point.normal ) )
-		return false;
+	return point.source == "pixelsurf_assist_import" || point.source == "pixelsurf_assist_candidate" || point.source_pixel_assist_index >= 0;
+}
+
+PixelSurfContactDebug evaluate_pixelsurf_contact( const BruteSimState& state, const RoutePoint& point, const BruteForceSettings& settings,
+                                                  const BrutePlan& plan )
+{
+	PixelSurfContactDebug debug{ };
+	debug.wall_like = point.type == PointType::PixelSurf && wall_like_normal( point.has_normal, point.normal );
+	if ( point.type != PointType::PixelSurf ) {
+		debug.reason = "not_pixelsurf_point";
+		return debug;
+	}
+	if ( !debug.wall_like ) {
+		debug.reason = "target_normal_not_wall_like";
+		return debug;
+	}
 
 	const float direct_distance = distance_3d_between( state.origin, point.position );
-	if ( direct_distance > std::max( 2.0f, settings.pixelsurf_radius ) )
-		return false;
+	debug.direct_distance = direct_distance;
+	debug.coordinate_near = direct_distance <= std::max( 2.0f, settings.pixelsurf_radius );
+	if ( !debug.coordinate_near ) {
+		debug.reason = "outside_pixelsurf_radius";
+		return debug;
+	}
+
+	debug.horizontal_speed = length_2d( state.velocity );
+	const Vec3 horizontal_velocity = normalized( { state.velocity.x, state.velocity.y, 0.0f } );
+	if ( length_3d( horizontal_velocity ) > 0.001f ) {
+		debug.velocity_approach_dot = dot_product( horizontal_velocity, point.normal );
+		debug.incoming_dot = dot_product( { -horizontal_velocity.x, -horizontal_velocity.y, 0.0f }, point.normal );
+	}
+	if ( point.has_normal ) {
+		const Vec3 from_target = { state.origin.x - point.position.x, state.origin.y - point.position.y, state.origin.z - point.position.z };
+		debug.plane_distance = dot_product( from_target, point.normal );
+		debug.plane_overlap = std::fabs( debug.plane_distance ) <= std::max( 1.25f, settings.pixelsurf_radius * 0.35f );
+	}
 
 	const Vec3 approach = normalized( { state.origin.x - state.previous_origin.x, state.origin.y - state.previous_origin.y, state.origin.z - state.previous_origin.z } );
 	if ( length_3d( approach ) > 0.001f ) {
-		const float approach_dot = dot_product( approach, point.normal );
-		if ( approach_dot > 0.35f )
-			return false;
+		debug.approach_dot = dot_product( approach, point.normal );
+		debug.approach_ok = debug.approach_dot <= debug.approach_threshold;
+		if ( !debug.approach_ok ) {
+			debug.quality = PointHitQuality::CoordinateNear;
+			debug.reason = "coordinate_near_but_bad_approach";
+		}
 	}
 
-	if ( settings.use_hull_trace )
-		trace_confirmed = matches_pixelsurf_trace( state.previous_origin, point.position, point, state.ducked );
-	return true;
+	if ( settings.use_hull_trace && g_interfaces.m_engine_trace && g_interfaces.m_engine_client && g_interfaces.m_engine_client->is_in_game( ) ) {
+		auto run_probe = [ & ]( const char* name, const Vec3& from, const Vec3& to ) {
+			TraceProbeResult probe{ };
+			probe.name = name ? name : "unknown";
+			trace_t trace{ };
+			trace_world_hull( from, to, state.ducked ? 54.0f : 72.0f, trace );
+			probe.hit = trace.did_hit( );
+			probe.fraction = trace.m_fraction;
+			probe.normal = from_source_vector( trace.m_plane.m_normal );
+			probe.distance = probe.hit ? distance_3d_between( from_source_vector( trace.m_end ), point.position )
+			                           : std::numeric_limits< float >::max( );
+			probe.normal_dot = point.has_normal ? dot_product( probe.normal, point.normal ) : 0.0f;
+			debug.probes.push_back( probe );
+		};
+
+		run_probe( "movement", state.previous_origin, state.origin );
+
+		if ( point.has_normal ) {
+			const float probe_len = std::max( 18.0f, settings.pixelsurf_radius * 2.5f );
+			run_probe( "toward_target_normal", state.origin,
+			           { state.origin.x + point.normal.x * probe_len, state.origin.y + point.normal.y * probe_len,
+			             state.origin.z + point.normal.z * probe_len } );
+			run_probe( "against_target_normal", state.origin,
+			           { state.origin.x - point.normal.x * probe_len, state.origin.y - point.normal.y * probe_len,
+			             state.origin.z - point.normal.z * probe_len } );
+		}
+
+		const Vec3 toward_target = normalized(
+			{ point.position.x - state.origin.x, point.position.y - state.origin.y, point.position.z - state.origin.z } );
+		if ( length_3d( toward_target ) > 0.001f ) {
+			const float probe_len = std::max( 18.0f, std::min( 48.0f, direct_distance + settings.pixelsurf_radius ) );
+			run_probe( "toward_target_point", state.origin,
+			           { state.origin.x + toward_target.x * probe_len, state.origin.y + toward_target.y * probe_len,
+			             state.origin.z + toward_target.z * probe_len } );
+		}
+
+		for ( const auto& probe : debug.probes ) {
+			const bool confirmed = probe.hit && wall_like_normal( true, probe.normal ) && std::fabs( probe.normal_dot ) >= 0.78f &&
+			                       probe.distance <= std::max( 16.0f, settings.pixelsurf_radius * 3.0f );
+			const bool better_probe = confirmed ||
+			                          ( probe.hit && ( !debug.trace_hit || probe.distance < debug.trace_distance ||
+			                                           std::fabs( probe.normal_dot ) > std::fabs( debug.normal_dot ) ) );
+			if ( better_probe ) {
+				debug.trace_hit = probe.hit;
+				debug.trace_fraction = probe.fraction;
+				debug.trace_normal = probe.normal;
+				debug.trace_distance = probe.distance;
+				debug.normal_dot = probe.normal_dot;
+				debug.trace_confirmed = confirmed;
+			}
+			if ( confirmed )
+				break;
+		}
+
+		if ( debug.trace_confirmed ) {
+			debug.quality = PointHitQuality::TraceConfirmed;
+			debug.reason = "hull_trace_probe_matches_pixelsurf_plane";
+			return debug;
+		}
+
+		const bool hull_near = debug.trace_hit && debug.trace_distance <= std::max( 24.0f, settings.pixelsurf_radius * 4.0f );
+		if ( hull_near )
+			debug.quality = PointHitQuality::HullNear;
+	}
+
+	debug.pixelassist_valid = pixelsurf_source_is_assist( point ) && point.confidence >= 0.75f && debug.coordinate_near && debug.approach_ok &&
+	                          ( !settings.use_hull_trace || debug.quality == PointHitQuality::HullNear );
+	if ( debug.pixelassist_valid ) {
+		debug.quality = PointHitQuality::PixelSurfAssistConfirmed;
+		debug.reason = "imported_pixelsurf_candidate_hull_near";
+		return debug;
+	}
+
+	if ( debug.quality == PointHitQuality::HullNear ) {
+		debug.reason = debug.approach_ok ? "hull_near_but_normal_unconfirmed" : "hull_near_but_bad_approach";
+		return debug;
+	}
+
+	debug.quality = PointHitQuality::CoordinateNear;
+	debug.reason = !debug.approach_ok ? "coordinate_near_but_bad_approach" :
+	               settings.use_hull_trace ? "coordinate_near_but_trace_not_confirmed" : "coordinate_near_trace_disabled";
+	return debug;
+}
+
+bool pixelsurf_contact_is_confirmed( const PixelSurfContactDebug& debug, const RoutePoint& point, const BruteForceSettings& settings )
+{
+	if ( settings.pixelsurf_validation_mode == PixelSurfValidationMode::PixelAssistOnly )
+		return debug.quality == PointHitQuality::PixelSurfAssistConfirmed;
+	if ( settings.pixelsurf_validation_mode == PixelSurfValidationMode::StrictTrace && point.source == "manual_pixelsurf" )
+		return debug.quality == PointHitQuality::TraceConfirmed;
+	return debug.quality == PointHitQuality::TraceConfirmed || debug.quality == PointHitQuality::PixelSurfAssistConfirmed;
 }
 
 bool near_jumpbug_window( const BruteSimState& state, const std::vector< RoutePoint >& points, const int target_index )
@@ -1402,11 +1766,46 @@ void steer_toward_point( BruteSimState& state, const RoutePoint& point, const Br
 	if ( dist <= 0.001f )
 		return;
 
-	const Vec3 dir = { to_target.x / dist, to_target.y / dist, 0.0f };
-	const float target_speed = static_cast< float >( std::clamp( plan.speed_sample, 80, 340 ) );
-	const float blend = state.on_ground ? 0.30f : 0.075f;
-	state.velocity.x += ( dir.x * target_speed - state.velocity.x ) * blend;
-	state.velocity.y += ( dir.y * target_speed - state.velocity.y ) * blend;
+	static constexpr float k_pi = 3.14159265358979323846f;
+	static constexpr float k_tick = 1.0f / 64.0f;
+	const float base_yaw = plan.use_current_view_yaw ? ( plan.current_view_yaw_deg * k_pi / 180.0f ) : std::atan2( to_target.y, to_target.x );
+	const float yaw = base_yaw + plan.yaw_offset_deg * k_pi / 180.0f;
+	const Vec3 forward = { std::cos( yaw ), std::sin( yaw ), 0.0f };
+	const Vec3 right = { -forward.y, forward.x, 0.0f };
+	Vec3 wish = { forward.x * plan.forwardmove + right.x * plan.sidemove, forward.y * plan.forwardmove + right.y * plan.sidemove, 0.0f };
+	const float wish_len = length_2d( wish );
+	if ( wish_len <= 0.001f )
+		return;
+
+	Vec3 wishdir = { wish.x / wish_len, wish.y / wish_len, 0.0f };
+	const float wishspeed = static_cast< float >( std::clamp( plan.speed_sample, 80, 340 ) );
+	if ( state.on_ground ) {
+		const float speed = length_2d( state.velocity );
+		if ( speed > 0.1f ) {
+			const float control = std::max( speed, 80.0f );
+			const float drop = control * 5.2f * k_tick;
+			const float new_speed = std::max( 0.0f, speed - drop );
+			state.velocity.x *= new_speed / speed;
+			state.velocity.y *= new_speed / speed;
+		}
+	}
+
+	const float current_speed = state.velocity.x * wishdir.x + state.velocity.y * wishdir.y;
+	const float add_speed = wishspeed - current_speed;
+	if ( add_speed <= 0.0f )
+		return;
+
+	const float accel = state.on_ground ? 5.5f : 12.0f;
+	const float accel_speed = std::min( add_speed, accel * wishspeed * k_tick );
+	state.velocity.x += wishdir.x * accel_speed;
+	state.velocity.y += wishdir.y * accel_speed;
+
+	const float max_speed = state.on_ground ? 350.0f : 420.0f;
+	const float final_speed = length_2d( state.velocity );
+	if ( final_speed > max_speed ) {
+		state.velocity.x *= max_speed / final_speed;
+		state.velocity.y *= max_speed / final_speed;
+	}
 }
 
 BruteSimState simulate_brute_tick( const Settings& settings, BruteSimState state, const TickInput& input )
@@ -1437,7 +1836,7 @@ BruteSimState simulate_brute_tick( const Settings& settings, BruteSimState state
 		}
 	}
 
-	if ( !state.on_ground )
+	if ( !state.on_ground || ( wants_jump && was_on_ground ) )
 		state.velocity.z -= HalfGravity( settings );
 
 	if ( wants_jump && was_on_ground ) {
@@ -1522,31 +1921,54 @@ bool plan_has_action( const BrutePlan& plan, const MovementAction action )
 std::vector< BrutePlan > generate_plan_variants( const std::vector< MovementAction >& actions, const BruteForceSettings& settings )
 {
 	std::vector< BrutePlan > plans;
-	const std::vector< int > speeds = settings.allow_heavy_cpu ? std::vector< int >{ 180, 220, 250, 280, 320 }
-	                                                           : std::vector< int >{ 220, 250, 280 };
-	const std::vector< int > delays = { 0, 2, 4, 6 };
-	const std::vector< int > mj_offsets = std::find( actions.begin( ), actions.end( ), MovementAction::MiniJump ) != actions.end( )
-	                                          ? std::vector< int >{ 1, 2, 3, 4, 5 }
-	                                          : std::vector< int >{ 2 };
-	const std::vector< int > cj_leads = std::find( actions.begin( ), actions.end( ), MovementAction::CrouchJump ) != actions.end( )
-	                                        ? std::vector< int >{ 1, 4, 7, 10 }
-	                                        : std::vector< int >{ 4 };
+	const std::vector< int > speeds = !settings.speed_samples.empty( )
+		                                  ? settings.speed_samples
+		                                  : ( settings.allow_heavy_cpu ? std::vector< int >{ 180, 220, 250, 280, 320 }
+		                                                               : std::vector< int >{ 220, 250, 280 } );
+	const std::vector< int > delays = !settings.delay_samples.empty( ) ? settings.delay_samples : std::vector< int >{ 0, 2, 4, 6 };
+	const std::vector< float > yaw_offsets = !settings.yaw_offsets_deg.empty( )
+		                                         ? settings.yaw_offsets_deg
+		                                         : ( settings.allow_heavy_cpu ? std::vector< float >{ -30.0f, -15.0f, 0.0f, 15.0f, 30.0f }
+		                                                                      : std::vector< float >{ -15.0f, 0.0f, 15.0f } );
+	const std::vector< MoveSample > move_samples =
+		!settings.move_samples.empty( )
+			? settings.move_samples
+			: ( settings.allow_heavy_cpu ? std::vector< MoveSample >{ { 450.0f, -450.0f }, { 450.0f, 0.0f }, { 450.0f, 450.0f } }
+			                             : std::vector< MoveSample >{ { 450.0f, 0.0f } } );
+	const bool contains_minijump = std::find( actions.begin( ), actions.end( ), MovementAction::MiniJump ) != actions.end( );
+	const bool contains_crouchjump = std::find( actions.begin( ), actions.end( ), MovementAction::CrouchJump ) != actions.end( );
+	const std::vector< int > mj_offsets = contains_minijump ? ( !settings.minijump_release_offsets.empty( ) ? settings.minijump_release_offsets
+	                                                                                                        : std::vector< int >{ 1, 2, 3, 4, 5 } )
+	                                                        : std::vector< int >{ 2 };
+	const std::vector< int > cj_leads = contains_crouchjump ? ( !settings.crouchjump_lead_samples.empty( ) ? settings.crouchjump_lead_samples
+	                                                                                                      : std::vector< int >{ 1, 4, 7, 10 } )
+	                                                        : std::vector< int >{ 4 };
 
 	for ( const int speed : speeds ) {
 		for ( const int delay : delays ) {
-			for ( const int mj : mj_offsets ) {
-				for ( const int lead : cj_leads ) {
-					BrutePlan plan{ };
-					plan.actions = actions;
-					plan.speed_sample = speed;
-					plan.delay_ticks = delay;
-					plan.minijump_release_tick = mj;
-					plan.crouchjump_lead_ticks = lead;
-					plans.push_back( plan );
-					if ( static_cast< int >( plans.size( ) ) >= settings.max_variants )
-						return plans;
-					if ( !settings.allow_heavy_cpu && plans.size( ) >= 180U )
-						return plans;
+			for ( const float yaw : yaw_offsets ) {
+				for ( const auto move : move_samples ) {
+					for ( const int mj : mj_offsets ) {
+						for ( const int lead : cj_leads ) {
+							for ( int base_yaw = 0; base_yaw < ( settings.include_current_view_yaw ? 2 : 1 ); ++base_yaw ) {
+								BrutePlan plan{ };
+								plan.actions = actions;
+								plan.speed_sample = speed;
+								plan.use_current_view_yaw = base_yaw == 1;
+								plan.yaw_offset_deg = yaw;
+								plan.forwardmove = move.forwardmove;
+								plan.sidemove = move.sidemove;
+								plan.delay_ticks = delay;
+								plan.minijump_release_tick = mj;
+								plan.crouchjump_lead_ticks = lead;
+								if ( contains_minijump )
+									plan.variant_label = "mj_release+" + std::to_string( mj );
+								plans.push_back( plan );
+								if ( static_cast< int >( plans.size( ) ) >= settings.max_variants )
+									return plans;
+							}
+						}
+					}
 				}
 			}
 		}
@@ -1569,6 +1991,62 @@ void update_closest_point( BruteCandidateResult& result, const BruteSimState& st
 	}
 }
 
+void update_best_near_record( BruteCandidateResult& result, const PointHitRecord& record )
+{
+	if ( record.distance < result.best_near_record.distance ) {
+		result.best_near_record = record;
+		result.closest_distance = record.distance;
+		result.closest_point_id = record.point_id;
+		result.closest_tick = record.tick;
+	}
+}
+
+std::string pixelsurf_near_proof( const BruteCandidateResult& result, const BruteSimState& state, const RoutePoint& point,
+                                  const PixelSurfContactDebug& debug )
+{
+	std::ostringstream proof;
+	proof << "best_near_miss seq=\"" << brute_sequence_text( result.actions, false ) << "\" point=" << point.id
+	      << " type=pixelsurf tick=" << state.tick << " dist=" << debug.direct_distance
+	      << " origin=" << vec3_string( state.origin ) << " vel=" << vec3_string( state.velocity )
+	      << " speed2d=" << length_2d( state.velocity ) << " hull=" << ( state.ducked ? "duck" : "standing" )
+	      << " ducked=" << ( state.ducked ? 1 : 0 ) << " target=" << vec3_string( point.position )
+	      << " target_normal=" << ( point.has_normal ? vec3_string( point.normal ) : std::string( "(unavailable)" ) )
+	      << " trace_start=" << vec3_string( state.previous_origin ) << " trace_end=" << vec3_string( state.origin )
+	      << " trace_hit=" << ( debug.trace_hit ? 1 : 0 ) << " trace_fraction=" << debug.trace_fraction
+	      << " trace_normal=" << vec3_string( debug.trace_normal ) << " normal_dot=" << debug.normal_dot
+	      << " quality=" << point_hit_quality_text( debug.quality ) << " reason=" << debug.reason
+	      << " source=" << point.source;
+	return proof.str( );
+}
+
+std::string pixelsurf_approach_proof( const BruteCandidateResult& result, const BruteSimState& state, const RoutePoint& point,
+                                      const PixelSurfContactDebug& debug, const BrutePlan& plan )
+{
+	std::ostringstream proof;
+	proof << "approach_debug seq=\"" << brute_sequence_text( result.actions, false ) << "\" tick=" << state.tick
+	      << " vel=" << vec3_string( state.velocity ) << " speed2d=" << debug.horizontal_speed
+	      << " target_normal=" << ( point.has_normal ? vec3_string( point.normal ) : std::string( "(unavailable)" ) )
+	      << " approach_dot=" << debug.velocity_approach_dot << " incoming_dot=" << debug.incoming_dot
+	      << " movement_dot=" << debug.approach_dot << " threshold=" << debug.approach_threshold
+	      << " plane_dist=" << debug.plane_distance << " plane_overlap=" << ( debug.plane_overlap ? 1 : 0 )
+	      << " yaw_sample=" << plan.yaw_offset_deg << " use_current_yaw=" << ( plan.use_current_view_yaw ? 1 : 0 )
+	      << " fmove=" << plan.forwardmove << " smove=" << plan.sidemove
+	      << " result=" << ( debug.approach_ok ? "good_or_unproven" : "bad" );
+	return proof.str( );
+}
+
+std::string pixelsurf_trace_probe_proof( const BruteCandidateResult& result, const BruteSimState& state, const RoutePoint& point,
+                                         const PixelSurfContactDebug& debug )
+{
+	std::ostringstream proof;
+	proof << "ps_trace_probe seq=\"" << brute_sequence_text( result.actions, false ) << "\" tick=" << state.tick
+	      << " point=" << point.id << " plane_dist=" << debug.plane_distance
+	      << " plane_overlap=" << ( debug.plane_overlap ? 1 : 0 );
+	for ( const auto& probe : debug.probes )
+		proof << ' ' << trace_probe_summary( probe );
+	return proof.str( );
+}
+
 BruteCandidateResult simulate_plan( const SimStart& start, const std::vector< RoutePoint >& points, const BrutePlan& plan,
                                     const BruteForceSettings& brute_settings )
 {
@@ -1584,6 +2062,8 @@ BruteCandidateResult simulate_plan( const SimStart& start, const std::vector< Ro
 		return result;
 	}
 
+	BrutePlan steering_plan = plan;
+	steering_plan.current_view_yaw_deg = start.view_angles.y;
 	BruteSimState state = make_brute_state( start );
 	int next_point = 0;
 	int action_index = 0;
@@ -1591,19 +2071,70 @@ BruteCandidateResult simulate_plan( const SimStart& start, const std::vector< Ro
 	int crouch_lead_remaining = 0;
 	int hold_duck_until = -1;
 	int release_duck_tick = -1;
-	bool last_ps_trace_confirmed = false;
+	int ground_action_wait_ticks = 0;
+	std::string floor_near_reason;
 
 	for ( int tick = 0; tick < settings.max_ticks; ++tick ) {
 		while ( next_point < static_cast< int >( points.size( ) ) ) {
-			bool trace_confirmed = false;
-			const bool hit = points[ next_point ].type == PointType::Floor ? hit_floor_point( state, points[ next_point ], brute_settings )
-			                                                               : hit_pixelsurf_point( state, points[ next_point ], brute_settings, trace_confirmed );
+			bool hit = false;
+			FloorContactDebug floor_debug{ };
+			PixelSurfContactDebug ps_debug{ };
+			if ( points[ next_point ].type == PointType::Floor ) {
+				floor_debug = evaluate_floor_contact( state, points[ next_point ], brute_settings );
+				hit = floor_debug.coordinate_near;
+				if ( !hit && floor_near_reason.empty( ) && floor_debug.distance2d <= std::max( 2.0f, brute_settings.floor_radius ) ) {
+					std::ostringstream out;
+					out << "floor_near point=" << points[ next_point ].id << " tick=" << state.tick << " dist2d=" << floor_debug.distance2d
+					    << " z_delta=" << floor_debug.z_delta << " on_ground=" << ( state.on_ground ? 1 : 0 )
+					    << " trace_floor=" << ( floor_debug.trace_floor_like ? 1 : 0 ) << " accepted=0 reason=" << floor_debug.reason;
+					floor_near_reason = out.str( );
+				}
+			} else {
+				ps_debug = evaluate_pixelsurf_contact( state, points[ next_point ], brute_settings, plan );
+				if ( point_quality_rank( ps_debug.quality ) > point_quality_rank( result.best_pixelsurf_quality ) )
+					result.best_pixelsurf_quality = ps_debug.quality;
+				if ( ps_debug.quality != PointHitQuality::None ) {
+					PointHitRecord near_record{ };
+					near_record.point_id = points[ next_point ].id;
+					near_record.type = points[ next_point ].type;
+					near_record.tick = state.tick;
+					near_record.distance = ps_debug.direct_distance;
+					near_record.distance2d = distance_2d_between( state.origin, points[ next_point ].position );
+					near_record.z_delta = state.origin.z - points[ next_point ].position.z;
+					near_record.quality = ps_debug.quality == PointHitQuality::CoordinateNear && points[ next_point ].source == "manual_pixelsurf"
+						               ? "CoordinateNear/manual_pixelsurf_coordinate_hit_unconfirmed"
+						               : point_hit_quality_text( ps_debug.quality );
+					near_record.source = points[ next_point ].source;
+					near_record.reason = ps_debug.reason;
+					const bool was_best_near = ps_debug.direct_distance < result.best_near_record.distance;
+					update_best_near_record( result, near_record );
+					if ( was_best_near ) {
+						result.best_near_proof = pixelsurf_near_proof( result, state, points[ next_point ], ps_debug );
+						result.best_near_approach_proof = pixelsurf_approach_proof( result, state, points[ next_point ], ps_debug, plan );
+						result.best_near_trace_proof = pixelsurf_trace_probe_proof( result, state, points[ next_point ], ps_debug );
+					}
+				}
+				hit = pixelsurf_contact_is_confirmed( ps_debug, points[ next_point ], brute_settings );
+				if ( !hit && ps_debug.quality != PointHitQuality::None )
+					break;
+			}
 			if ( !hit )
 				break;
 
 			result.point_hit_ticks[ next_point ] = state.tick;
 			++result.hit_points;
 			if ( points[ next_point ].type == PointType::Floor ) {
+				PointHitRecord hit_record{ };
+				hit_record.point_id = points[ next_point ].id;
+				hit_record.type = points[ next_point ].type;
+				hit_record.tick = state.tick;
+				hit_record.distance = floor_debug.distance2d;
+				hit_record.distance2d = floor_debug.distance2d;
+				hit_record.z_delta = floor_debug.z_delta;
+				hit_record.quality = floor_hit_quality_text( floor_debug.quality );
+				hit_record.source = points[ next_point ].source;
+				hit_record.reason = floor_debug.reason;
+				result.point_hits.push_back( hit_record );
 				state.origin.z = points[ next_point ].position.z;
 				state.velocity.z = 0.0f;
 				state.on_ground = true;
@@ -1611,25 +2142,39 @@ BruteCandidateResult simulate_plan( const SimStart& start, const std::vector< Ro
 				next_action_tick = state.tick + plan.delay_ticks;
 			} else {
 				result.pixelsurf_tick = state.tick;
-				result.trace_confirmed = trace_confirmed;
-				result.approximate_hull_hit = !trace_confirmed;
-				last_ps_trace_confirmed = trace_confirmed;
+				result.trace_confirmed = ps_debug.quality == PointHitQuality::TraceConfirmed;
+				result.approximate_hull_hit = ps_debug.quality == PointHitQuality::PixelSurfAssistConfirmed;
+				result.final_hit_quality = ps_debug.quality;
+				result.point_hits.push_back( result.best_near_record );
+				std::ostringstream proof;
+				proof << "point_hit seq=\"" << brute_sequence_text( result.actions, true ) << "\" point=" << points[ next_point ].id
+				      << " type=pixelsurf tick=" << state.tick << " origin=" << vec3_string( state.origin )
+				      << " vel=" << vec3_string( state.velocity ) << " speed2d=" << length_2d( state.velocity )
+				      << " dist=" << ps_debug.direct_distance << " hull=" << ( state.ducked ? "duck" : "standing" )
+				      << " trace_hit=" << ( ps_debug.trace_hit ? 1 : 0 ) << " trace_fraction=" << ps_debug.trace_fraction
+				      << " trace_normal=" << vec3_string( ps_debug.trace_normal ) << " target_normal=" << vec3_string( points[ next_point ].normal )
+				      << " normal_dot=" << ps_debug.normal_dot << " contact_confirmed=" << ( result.trace_confirmed ? 1 : 0 )
+				      << " pixelassist_valid=" << ( ps_debug.quality == PointHitQuality::PixelSurfAssistConfirmed ? 1 : 0 )
+				      << " quality=" << point_hit_quality_text( ps_debug.quality );
+				result.pixelsurf_hit_proof = proof.str( );
 			}
 			++next_point;
 		}
 
 		if ( next_point >= static_cast< int >( points.size( ) ) ) {
 			result.status = RouteResultStatus::SimulatedHitAllPoints;
-			result.reason = last_ps_trace_confirmed ? "all points hit; pixelsurf hull trace confirmed" : "all points hit by coordinate/radius simulation";
-			result.score = 1000.0f + static_cast< float >( result.hit_points ) * 100.0f - static_cast< float >( state.tick ) -
-			               static_cast< float >( plan.actions.size( ) ) * 4.0f + ( result.trace_confirmed ? 80.0f : 0.0f );
+			result.reason = result.trace_confirmed ? "all points hit; pixelsurf hull trace confirmed" :
+			                                         "all points hit; imported pixelsurf assist candidate confirmed";
+			result.score = static_cast< float >( brute_status_rank( result.status ) ) + static_cast< float >( result.hit_points ) * 100.0f -
+			               static_cast< float >( state.tick ) - static_cast< float >( plan.actions.size( ) ) * 4.0f +
+			               ( result.trace_confirmed ? 80.0f : 20.0f );
 			return result;
 		}
 
 		update_closest_point( result, state, points, next_point );
 
 		const RoutePoint& target = points[ next_point ];
-		steer_toward_point( state, target, plan );
+		steer_toward_point( state, target, steering_plan );
 
 		TickInput input{ };
 		if ( hold_duck_until >= state.tick )
@@ -1642,15 +2187,21 @@ BruteCandidateResult simulate_plan( const SimStart& start, const std::vector< Ro
 			if ( action == MovementAction::Jump && state.on_ground ) {
 				input.action = Action::Jump;
 				++action_index;
+				++result.executed_actions;
+				ground_action_wait_ticks = 0;
 			} else if ( action == MovementAction::LongJump && state.on_ground ) {
 				input.action = Action::JumpDuck;
 				hold_duck_until = state.tick + 5;
 				++action_index;
+				++result.executed_actions;
+				ground_action_wait_ticks = 0;
 			} else if ( action == MovementAction::MiniJump && state.on_ground ) {
 				input.action = Action::JumpDuck;
 				release_duck_tick = state.tick + std::clamp( plan.minijump_release_tick, 1, 6 );
 				hold_duck_until = state.tick + 1;
 				++action_index;
+				++result.executed_actions;
+				ground_action_wait_ticks = 0;
 			} else if ( action == MovementAction::CrouchJump && state.on_ground ) {
 				if ( crouch_lead_remaining <= 0 )
 					crouch_lead_remaining = std::clamp( plan.crouchjump_lead_ticks, 1, 10 );
@@ -1662,11 +2213,26 @@ BruteCandidateResult simulate_plan( const SimStart& start, const std::vector< Ro
 					input.action = Action::JumpDuck;
 					hold_duck_until = state.tick + 8;
 					++action_index;
+					++result.executed_actions;
+					ground_action_wait_ticks = 0;
 				}
 			} else if ( action == MovementAction::JumpBug ) {
 				if ( near_jumpbug_window( state, points, next_point ) ) {
 					input.action = Action::Jump;
 					++action_index;
+					++result.executed_actions;
+					ground_action_wait_ticks = 0;
+				}
+			} else if ( !state.on_ground && ( action == MovementAction::Jump || action == MovementAction::LongJump ||
+			                                  action == MovementAction::CrouchJump || action == MovementAction::MiniJump ) ) {
+				++ground_action_wait_ticks;
+				if ( ground_action_wait_ticks > 72 && target.type != PointType::Floor ) {
+					result.status = result.best_pixelsurf_quality == PointHitQuality::CoordinateNear ? RouteResultStatus::CoordinateNearTarget
+					                                                                                : RouteResultStatus::SimulatedPartialHit;
+					result.reason = "no_second_jump_window; second_ground_action_without_landing";
+					result.score = static_cast< float >( brute_status_rank( result.status ) ) + static_cast< float >( result.hit_points ) * 100.0f -
+					               std::min( result.closest_distance, 999.0f );
+					return result;
 				}
 			}
 		}
@@ -1674,23 +2240,175 @@ BruteCandidateResult simulate_plan( const SimStart& start, const std::vector< Ro
 		state = simulate_brute_tick( settings, state, input );
 	}
 
-	result.status = result.hit_points > 0 ? RouteResultStatus::SimulatedPartialHit : RouteResultStatus::NearMiss;
-	result.reason = result.hit_points > 0 ? "max ticks reached after partial route hit" : "max ticks reached without hitting first route point";
-	result.score = static_cast< float >( result.hit_points ) * 100.0f - std::min( result.closest_distance, 999.0f );
+	if ( result.best_pixelsurf_quality == PointHitQuality::CoordinateNear || result.best_pixelsurf_quality == PointHitQuality::HullNear ) {
+		result.status = RouteResultStatus::CoordinateNearTarget;
+		result.reason = "coordinate_near_but_trace_not_confirmed";
+	} else {
+		result.status = result.hit_points > 0 ? RouteResultStatus::SimulatedPartialHit : RouteResultStatus::NearMiss;
+		result.reason = result.hit_points > 0 ? "max ticks reached after partial route hit" : "max ticks reached without hitting first route point";
+	}
+	if ( result.hit_points == 0 && !floor_near_reason.empty( ) )
+		result.reason += "; " + floor_near_reason;
+	result.score = static_cast< float >( brute_status_rank( result.status ) ) + static_cast< float >( result.hit_points ) * 100.0f -
+	               std::min( result.closest_distance, 999.0f );
 	return result;
 }
 
 bool is_better_brute_result( const BruteCandidateResult& lhs, const BruteCandidateResult& rhs )
 {
-	if ( lhs.status == RouteResultStatus::SimulatedHitAllPoints && rhs.status != RouteResultStatus::SimulatedHitAllPoints )
-		return true;
-	if ( lhs.status != RouteResultStatus::SimulatedHitAllPoints && rhs.status == RouteResultStatus::SimulatedHitAllPoints )
-		return false;
+	const int lhs_rank = brute_status_rank( lhs.status );
+	const int rhs_rank = brute_status_rank( rhs.status );
+	if ( lhs_rank != rhs_rank )
+		return lhs_rank > rhs_rank;
+	if ( lhs.final_hit_quality != rhs.final_hit_quality )
+		return point_quality_rank( lhs.final_hit_quality ) > point_quality_rank( rhs.final_hit_quality );
+	if ( lhs.best_pixelsurf_quality != rhs.best_pixelsurf_quality )
+		return point_quality_rank( lhs.best_pixelsurf_quality ) > point_quality_rank( rhs.best_pixelsurf_quality );
+	if ( lhs.status == RouteResultStatus::SimulatedHitAllPoints && lhs.trace_confirmed != rhs.trace_confirmed )
+		return lhs.trace_confirmed;
+	if ( lhs.status == RouteResultStatus::CoordinateNearTarget && rhs.status == RouteResultStatus::CoordinateNearTarget &&
+	     std::fabs( lhs.closest_distance - rhs.closest_distance ) > 0.001f )
+		return lhs.closest_distance < rhs.closest_distance;
 	if ( lhs.hit_points != rhs.hit_points )
 		return lhs.hit_points > rhs.hit_points;
+	if ( lhs.pixelsurf_tick >= 0 && rhs.pixelsurf_tick >= 0 && lhs.pixelsurf_tick != rhs.pixelsurf_tick )
+		return lhs.pixelsurf_tick < rhs.pixelsurf_tick;
 	if ( std::fabs( lhs.closest_distance - rhs.closest_distance ) > 0.001f )
 		return lhs.closest_distance < rhs.closest_distance;
 	return lhs.score > rhs.score;
+}
+
+int count_ground_actions( const std::vector< MovementAction >& sequence );
+
+void accumulate_sequence_summary( SequenceSummary& summary, const BruteCandidateResult& candidate )
+{
+	++summary.variants;
+	const int expected_ground_actions = count_ground_actions( candidate.actions );
+	const bool pending_ground_action = expected_ground_actions > 1 && candidate.executed_actions < expected_ground_actions;
+	if ( pending_ground_action ) {
+		++summary.illegal_variants;
+		if ( candidate.reason.find( "second_ground_action" ) != std::string::npos || candidate.reason.find( "second_jump" ) != std::string::npos ||
+		     candidate.reason.find( "no_second_jump_window" ) != std::string::npos )
+			++summary.no_second_jump_window;
+		if ( candidate.closest_distance < summary.best_illegal_closest ) {
+			summary.best_illegal_closest = candidate.closest_distance;
+			summary.best_illegal_reason = candidate.reason;
+		}
+	} else {
+		++summary.legal_variants;
+		if ( candidate.closest_distance < summary.best_legal_closest ) {
+			summary.best_legal_closest = candidate.closest_distance;
+			summary.best_legal_reason = candidate.reason;
+		}
+	}
+	if ( candidate.status == RouteResultStatus::SimulatedHitAllPoints ) {
+		++summary.hits;
+	} else if ( candidate.status == RouteResultStatus::CoordinateNearTarget || candidate.best_pixelsurf_quality == PointHitQuality::CoordinateNear ||
+	            candidate.best_pixelsurf_quality == PointHitQuality::HullNear ) {
+		++summary.coordinate_near;
+	} else if ( candidate.hit_points > 0 ) {
+		++summary.partial;
+	} else {
+		++summary.rejects;
+	}
+	if ( candidate.closest_distance < summary.best_closest ) {
+		summary.best_closest = candidate.closest_distance;
+		summary.best_tick = candidate.closest_tick;
+	}
+	if ( candidate.best_near_record.point_id > 0 && candidate.best_near_record.distance < summary.best_near.distance )
+		summary.best_near = candidate.best_near_record;
+	for ( const auto& hit : candidate.point_hits ) {
+		auto existing = std::find_if( summary.point_hit_summaries.begin( ), summary.point_hit_summaries.end( ), [ & ]( const PointHitRecord& record ) {
+			return record.point_id == hit.point_id && record.type == hit.type;
+		} );
+		if ( existing == summary.point_hit_summaries.end( ) ) {
+			summary.point_hit_summaries.push_back( hit );
+		} else {
+			++existing->variants_hit;
+			if ( hit.distance < existing->distance ) {
+				const int variants = existing->variants_hit;
+				*existing = hit;
+				existing->variants_hit = variants;
+			}
+		}
+	}
+	if ( candidate.score > summary.best_score )
+		summary.best_score = candidate.score;
+	if ( brute_status_rank( candidate.status ) > brute_status_rank( summary.best_status ) ||
+	     ( candidate.status == summary.best_status && candidate.score >= summary.best_score ) ) {
+		summary.best_status = candidate.status;
+		summary.best_reason = candidate.reason;
+	}
+}
+
+bool sequence_contains_action( const std::vector< MovementAction >& sequence, const MovementAction action )
+{
+	return std::find( sequence.begin( ), sequence.end( ), action ) != sequence.end( );
+}
+
+int count_ground_actions( const std::vector< MovementAction >& sequence )
+{
+	int count = 0;
+	for ( const auto action : sequence ) {
+		if ( action == MovementAction::Jump || action == MovementAction::LongJump || action == MovementAction::MiniJump || action == MovementAction::CrouchJump )
+			++count;
+	}
+	return count;
+}
+
+std::string trimmed_upper( std::string value )
+{
+	value.erase( value.begin( ), std::find_if( value.begin( ), value.end( ), []( const unsigned char ch ) { return !std::isspace( ch ); } ) );
+	value.erase( std::find_if( value.rbegin( ), value.rend( ), []( const unsigned char ch ) { return !std::isspace( ch ); } ).base( ), value.end( ) );
+	for ( auto& ch : value )
+		ch = static_cast< char >( std::toupper( static_cast< unsigned char >( ch ) ) );
+	return value;
+}
+
+std::vector< MovementAction > parse_manual_sequence( const std::string& sequence )
+{
+	std::vector< MovementAction > actions;
+	if ( sequence.empty( ) )
+		return actions;
+
+	std::size_t start = 0;
+	while ( start < sequence.size( ) ) {
+		const std::size_t arrow = sequence.find( "->", start );
+		const std::string token = trimmed_upper( sequence.substr( start, arrow == std::string::npos ? std::string::npos : arrow - start ) );
+		if ( token == "JUMP" )
+			actions.push_back( MovementAction::Jump );
+		else if ( token == "LONGJUMP" || token == "LONG_JUMP" )
+			actions.push_back( MovementAction::LongJump );
+		else if ( token == "CROUCHJUMP" || token == "CROUCH_JUMP" )
+			actions.push_back( MovementAction::CrouchJump );
+		else if ( token == "MINIJUMP" || token == "MJ" )
+			actions.push_back( MovementAction::MiniJump );
+		else if ( token == "JUMPBUG" || token == "JB" )
+			actions.push_back( MovementAction::JumpBug );
+		else if ( token == "PS" || token == "PIXELSURF" )
+			;
+		else if ( !token.empty( ) && token != "NO_ACTION" )
+			return { };
+		if ( arrow == std::string::npos )
+			break;
+		start = arrow + 2;
+	}
+	return actions;
+}
+
+std::string brute_manual_observation_for_points( const std::vector< RoutePoint >& points )
+{
+	for ( const auto& point : points ) {
+		if ( point.type != PointType::PixelSurf || !point.has_normal )
+			continue;
+		const bool nuke_window_like = point.source == "manual_pixelsurf" && std::fabs( point.position.x - 1183.44f ) < 12.0f &&
+		                              std::fabs( point.position.y + 800.03f ) < 12.0f && std::fabs( point.position.z + 384.0f ) < 12.0f &&
+		                              std::fabs( point.normal.x ) < 0.15f && std::fabs( point.normal.y + 1.0f ) < 0.15f &&
+		                              std::fabs( point.normal.z ) < 0.15f;
+		if ( nuke_window_like )
+			return "MINIJUMP -> JUMP -> PS";
+	}
+	return "";
 }
 
 ComboResult combo_from_bruteforce( const BruteForceResult& brute )
@@ -1828,6 +2546,12 @@ const char* ToString( RouteResultStatus status )
 		return "calculating";
 	case RouteResultStatus::SimulatedHitAllPoints:
 		return "simulated hit all points";
+	case RouteResultStatus::SimulatedFinalPixelsurfHit:
+		return "final pixelsurf hit";
+	case RouteResultStatus::TraceConfirmedContact:
+		return "trace confirmed contact";
+	case RouteResultStatus::CoordinateNearTarget:
+		return "coordinate near target";
 	case RouteResultStatus::SimulatedPartialHit:
 		return "partial hit";
 	case RouteResultStatus::NearMiss:
@@ -2066,6 +2790,12 @@ int AddRoutePoint( const RoutePoint& point )
 	else
 		out << " normal=(unavailable)";
 	out << " assist_index=" << route_point.source_pixel_assist_index;
+	if ( route_point.type == PointType::PixelSurf ) {
+		out << " trace_hit=" << ( route_point.source_trace_hit ? 1 : 0 )
+		    << " trace_fraction=" << route_point.source_trace_fraction
+		    << " surface_normal=" << vec3_string( route_point.source_trace_normal )
+		    << " confidence=" << route_point.confidence;
+	}
 	AppendDebugLog( "routecalc", out.str( ) );
 	if ( route_point.source == "pixelsurf_assist_import" )
 		AppendDebugLog( "routecalc", "pixelsurf_candidate_imported route_id=" + std::to_string( route_point.id ) +
@@ -2439,55 +3169,104 @@ const BruteForceResult& RunBruteForceCalculation( const BruteForceSettings& sett
 	                    " points=" + std::to_string( points.size( ) ) + " max_depth=" + std::to_string( settings.max_depth ) +
 	                    " max_ticks=" + std::to_string( settings.max_ticks ) + " max_sequences=" + std::to_string( settings.max_sequences ) +
 	                    " max_variants=" + std::to_string( settings.max_variants ) );
+	AppendDebugLog( "routecalc",
+	                "preset=" + settings.preset_name + " floor_radius=" + std::to_string( settings.floor_radius ) +
+	                    " floor_z_tolerance=" + std::to_string( settings.floor_z_tolerance ) +
+	                    " pixelsurf_radius=" + std::to_string( settings.pixelsurf_radius ) +
+	                    " yaw_samples=" + std::to_string( settings.yaw_offsets_deg.empty( ) ? ( settings.allow_heavy_cpu ? 5 : 3 )
+	                                                                                         : static_cast< int >( settings.yaw_offsets_deg.size( ) ) ) +
+	                    " move_samples=" + std::to_string( settings.move_samples.empty( ) ? ( settings.allow_heavy_cpu ? 3 : 1 )
+	                                                                                      : static_cast< int >( settings.move_samples.size( ) ) ) +
+	                    " validation_mode=" + validation_mode_text( settings.pixelsurf_validation_mode ) +
+	                    " log_top_candidates=" + std::to_string( settings.log_top_candidates ) +
+	                    " log_all_candidate_summaries=" + ( settings.log_all_candidate_summaries ? std::string( "1" ) : std::string( "0" ) ) );
 	for ( const auto& point : points ) {
 		std::ostringstream out;
 		out << "point id=" << point.id << " type=" << ToString( point.type ) << " pos=" << vec3_string( point.position );
 		if ( point.has_normal )
 			out << " normal=" << vec3_string( point.normal );
 		out << " source=" << point.source;
+		if ( point.type == PointType::PixelSurf )
+			out << " trace_hit=" << ( point.source_trace_hit ? 1 : 0 )
+			    << " trace_fraction=" << point.source_trace_fraction
+			    << " trace_normal=" << vec3_string( point.source_trace_normal )
+			    << " confidence=" << point.confidence;
 		AppendDebugLog( "routecalc", out.str( ) );
 	}
+	const std::string manual_reference = brute_manual_observation_for_points( points );
+	const std::string manual_sequence = !settings.manual_sequence.empty( ) ? settings.manual_sequence : manual_reference;
+	if ( !manual_reference.empty( ) )
+		AppendDebugLog( "routecalc_observed", "sequence=\"" + manual_reference +
+		                                           "\" result=manual_reference_for_calibration not_solver_success=1" );
 
 	const auto started = std::chrono::steady_clock::now( );
 	const auto sequences = generate_action_sequences( std::max( 1, settings.max_depth ), std::max( 1, settings.max_sequences ) );
 	g_bruteforce_progress.sequences_generated = static_cast< int >( sequences.size( ) );
+	const int minijump_sequences = static_cast< int >( std::count_if( sequences.begin( ), sequences.end( ), []( const auto& sequence ) {
+		return sequence_contains_action( sequence, MovementAction::MiniJump );
+	} ) );
+	AppendDebugLog( "routecalc", "brute_force actions=JUMP,LONG_JUMP,MINIJUMP,CROUCH_JUMP,JUMPBUG generated_sequences=" +
+	                                  std::to_string( sequences.size( ) ) + " contains_minijump=" +
+	                                  ( minijump_sequences > 0 ? std::string( "1" ) : std::string( "0" ) ) +
+	                                  " minijump_sequences=" + std::to_string( minijump_sequences ) );
 
 	BruteCandidateResult best{ };
 	best.status = RouteResultStatus::Rejected;
 	best.closest_distance = std::numeric_limits< float >::max( );
 	bool found_hit = false;
+	bool search_timed_out = false;
+	std::string timeout_reason;
+	int minijump_summary_logs = 0;
+	int candidate_summary_logs = 0;
+	BruteCandidateResult manual_best{ };
+	SequenceSummary manual_summary{ };
+	const int floor_points = static_cast< int >( std::count_if( points.begin( ), points.end( ), []( const RoutePoint& point ) { return point.type == PointType::Floor; } ) );
+	const int max_ground_actions = floor_points + ( start.on_ground ? 1 : 0 );
 
-	for ( const auto& sequence : sequences ) {
-		if ( g_bruteforce_cancel_requested ) {
-			g_bruteforce_result.status = RouteResultStatus::Cancelled;
-			g_bruteforce_result.reason = "cancel_requested";
-			break;
+	const auto yaw_count = !settings.yaw_offsets_deg.empty( ) ? static_cast< int >( settings.yaw_offsets_deg.size( ) ) :
+	                                                           ( settings.allow_heavy_cpu ? 5 : 3 );
+	const auto move_count = !settings.move_samples.empty( ) ? static_cast< int >( settings.move_samples.size( ) ) :
+	                                                         ( settings.allow_heavy_cpu ? 3 : 1 );
+	const auto base_yaw_count = settings.include_current_view_yaw ? 2 : 1;
+	const auto mj_offset_count = !settings.minijump_release_offsets.empty( ) ? static_cast< int >( settings.minijump_release_offsets.size( ) ) : 5;
+
+	const auto run_sequence = [ & ]( const std::vector< MovementAction >& sequence, const bool is_manual, BruteCandidateResult& best_result,
+	                                 bool& found_route, bool& search_timed_out_flag, std::string& timeout,
+	                                 BruteCandidateResult* manual_best_out = nullptr, SequenceSummary* manual_summary_out = nullptr ) {
+		const auto variants = generate_plan_variants( sequence, settings );
+		SequenceSummary summary{ };
+		summary.text = brute_sequence_text( sequence, false );
+		if ( is_manual )
+			AppendDebugLog( "routecalc", "test_manual_first seq=\"" + brute_sequence_text( sequence, true ) + "\" variants=" +
+			                                  std::to_string( variants.size( ) ) );
+		else if ( sequence_contains_action( sequence, MovementAction::MiniJump ) && settings.show_debug_candidates ) {
+			AppendDebugLog( "routecalc", "expanded seq=\"" + summary.text + "\" variants=" + std::to_string( variants.size( ) ) +
+			                                  " minijump_offsets=" + std::to_string( mj_offset_count ) + " yaw_samples=" +
+			                                  std::to_string( yaw_count * base_yaw_count ) + " move_samples=" + std::to_string( move_count ) );
 		}
 
-		const auto variants = generate_plan_variants( sequence, settings );
 		for ( const auto& plan : variants ) {
 			const auto elapsed = std::chrono::duration_cast< std::chrono::milliseconds >( std::chrono::steady_clock::now( ) - started ).count( );
 			if ( elapsed >= settings.hard_timeout_ms ) {
-				g_bruteforce_result.status = RouteResultStatus::TimedOut;
-				g_bruteforce_result.reason = "hard_timeout";
+				search_timed_out_flag = true;
+				timeout = "hard_timeout";
 				break;
 			}
 			if ( g_bruteforce_progress.variants_tested >= settings.max_variants ) {
-				g_bruteforce_result.status = RouteResultStatus::TimedOut;
-				g_bruteforce_result.reason = "variant_cap";
+				search_timed_out_flag = true;
+				timeout = "variant_cap";
 				break;
 			}
 
 			++g_bruteforce_progress.variants_tested;
 			++g_bruteforce_progress.simulations_run;
 			BruteCandidateResult candidate = simulate_plan( start, points, plan, settings );
+			accumulate_sequence_summary( summary, candidate );
 			if ( candidate.status == RouteResultStatus::SimulatedHitAllPoints ) {
 				++g_bruteforce_progress.hits_found;
-				found_hit = true;
-				if ( g_bruteforce_progress.hits_found <= 8 || settings.show_debug_candidates )
-					AppendDebugLog( "routecalc", "candidate seq=\"" + brute_sequence_text( candidate.actions, true ) +
-					                                  "\" result=hit_all pixelsurf_tick=" + std::to_string( candidate.pixelsurf_tick ) +
-					                                  " score=" + std::to_string( candidate.score ) );
+				found_route = true;
+				if ( !candidate.pixelsurf_hit_proof.empty( ) && ( g_bruteforce_progress.hits_found <= 8 || settings.show_debug_candidates ) )
+					AppendDebugLog( "routecalc", candidate.pixelsurf_hit_proof );
 			} else {
 				++g_bruteforce_progress.rejected_count;
 				if ( settings.show_rejects && g_bruteforce_progress.rejected_count <= 64 )
@@ -2498,11 +3277,86 @@ const BruteForceResult& RunBruteForceCalculation( const BruteForceSettings& sett
 					                                  " closest=" + std::to_string( candidate.closest_distance ) );
 			}
 
-			if ( is_better_brute_result( candidate, best ) )
-				best = candidate;
+			if ( is_better_brute_result( candidate, best_result ) )
+				best_result = candidate;
+			if ( is_manual && manual_best_out && is_better_brute_result( candidate, *manual_best_out ) )
+				*manual_best_out = candidate;
 		}
 
-		if ( g_bruteforce_result.status == RouteResultStatus::TimedOut || g_bruteforce_result.status == RouteResultStatus::Cancelled )
+		if ( manual_summary_out )
+			*manual_summary_out = summary;
+
+		const bool log_summary = summary.variants > 0 &&
+		                         ( is_manual || settings.log_all_candidate_summaries || settings.show_debug_candidates || summary.hits > 0 ||
+		                           ( summary.coordinate_near > 0 && candidate_summary_logs++ < std::max( 0, settings.log_top_candidates ) ) ||
+		                           ( sequence_contains_action( sequence, MovementAction::MiniJump ) && minijump_summary_logs++ < 4 ) );
+		if ( log_summary ) {
+			std::string best_near_details;
+			if ( summary.best_near.point_id > 0 ) {
+				best_near_details = " best_near_point=" + std::to_string( summary.best_near.point_id ) +
+				                    " best_near_type=" + ToString( summary.best_near.type ) +
+				                    " best_near_dist=" + std::to_string( summary.best_near.distance ) +
+				                    " best_near_tick=" + std::to_string( summary.best_near.tick ) +
+				                    " best_near_quality=" + summary.best_near.quality +
+				                    " trace_reason=" + summary.best_near.reason +
+				                    " source=" + summary.best_near.source;
+			}
+			AppendDebugLog( is_manual ? "routecalc_manual" : "routecalc",
+			                ( is_manual ? "manual_candidate_summary seq=\"" : "candidate_summary seq=\"" ) + summary.text +
+			                    "\" variants=" + std::to_string( summary.variants ) + " hits=" + std::to_string( summary.hits ) +
+			                    " coordinate_near=" + std::to_string( summary.coordinate_near ) + " partial=" + std::to_string( summary.partial ) +
+			                    " rejects=" + std::to_string( summary.rejects ) + " best_closest=" +
+			                    std::to_string( summary.best_closest == std::numeric_limits< float >::max( ) ? -1.0f : summary.best_closest ) +
+			                    " best_tick=" + std::to_string( summary.best_tick ) + " best_status=" + ToString( summary.best_status ) +
+			                    " best_reason=" + summary.best_reason +
+			                    " legal_variants=" + std::to_string( summary.legal_variants ) +
+			                    " illegal_variants=" + std::to_string( summary.illegal_variants ) +
+			                    " no_second_jump_window=" + std::to_string( summary.no_second_jump_window ) +
+			                    " best_legal_closest=" +
+			                    std::to_string( summary.best_legal_closest == std::numeric_limits< float >::max( ) ? -1.0f : summary.best_legal_closest ) +
+			                    " best_illegal_closest=" +
+			                    std::to_string( summary.best_illegal_closest == std::numeric_limits< float >::max( ) ? -1.0f : summary.best_illegal_closest ) +
+			                    " best_legal_reason=" + summary.best_legal_reason +
+			                    " best_illegal_reason=" + summary.best_illegal_reason + best_near_details );
+			for ( const auto& hit : summary.point_hit_summaries ) {
+				if ( !is_manual && !settings.show_debug_candidates && !settings.log_all_candidate_summaries && !settings.show_rejects )
+					break;
+				AppendDebugLog( "routecalc",
+				                "point_hit_summary seq=\"" + summary.text + "\" point=" + std::to_string( hit.point_id ) +
+				                    " type=" + ToString( hit.type ) + " variants_hit=" + std::to_string( hit.variants_hit ) +
+				                    " best_dist2d=" + std::to_string( hit.distance2d ) +
+				                    " best_z_delta=" + std::to_string( hit.z_delta ) +
+				                    " best_tick=" + std::to_string( hit.tick ) +
+				                    " quality=" + hit.quality );
+			}
+		}
+	};
+
+	if ( !manual_sequence.empty( ) ) {
+		const auto manual_actions = parse_manual_sequence( manual_sequence );
+		if ( !manual_actions.empty( ) )
+			run_sequence( manual_actions, true, best, found_hit, search_timed_out, timeout_reason, &manual_best, &manual_summary );
+	}
+
+	for ( const auto& sequence : sequences ) {
+		if ( g_bruteforce_cancel_requested ) {
+			g_bruteforce_result.status = RouteResultStatus::Cancelled;
+			g_bruteforce_result.reason = "cancel_requested";
+			break;
+		}
+
+		if ( !manual_sequence.empty( ) ) {
+			const auto manual_actions = parse_manual_sequence( manual_sequence );
+			if ( !manual_actions.empty( ) && manual_actions == sequence )
+				continue;
+		}
+
+		if ( count_ground_actions( sequence ) > max_ground_actions )
+			continue;
+
+		run_sequence( sequence, false, best, found_hit, search_timed_out, timeout_reason );
+
+		if ( search_timed_out || g_bruteforce_result.status == RouteResultStatus::Cancelled )
 			break;
 	}
 
@@ -2511,16 +3365,44 @@ const BruteForceResult& RunBruteForceCalculation( const BruteForceSettings& sett
 	g_bruteforce_progress.hidden_candidates = std::max( 0, g_bruteforce_progress.hits_found - 1 );
 	g_bruteforce_progress.running = false;
 
-	if ( g_bruteforce_result.status != RouteResultStatus::TimedOut && g_bruteforce_result.status != RouteResultStatus::Cancelled ) {
-		g_bruteforce_result.status = found_hit ? RouteResultStatus::SimulatedHitAllPoints
-		                                       : ( best.hit_points > 0 ? RouteResultStatus::SimulatedPartialHit : RouteResultStatus::NearMiss );
-		g_bruteforce_result.reason = found_hit ? best.reason : "no candidate simulated every route point";
+	if ( g_bruteforce_result.status != RouteResultStatus::Cancelled ) {
+		if ( found_hit ) {
+			g_bruteforce_result.status = RouteResultStatus::SimulatedHitAllPoints;
+			g_bruteforce_result.reason = best.reason + ( search_timed_out ? "; search_timed_out=" + timeout_reason : "" );
+		} else if ( search_timed_out ) {
+			g_bruteforce_result.status = best.status == RouteResultStatus::Rejected ? RouteResultStatus::TimedOut : best.status;
+			g_bruteforce_result.reason = timeout_reason + "; best_partial=" + best.reason;
+		} else {
+			g_bruteforce_result.status = best.status == RouteResultStatus::Rejected
+				                             ? ( best.hit_points > 0 ? RouteResultStatus::SimulatedPartialHit : RouteResultStatus::NearMiss )
+				                             : best.status;
+			g_bruteforce_result.reason = best.reason.empty( ) ? "no candidate simulated every route point" : best.reason;
+		}
+		if ( !manual_sequence.empty( ) && !found_hit )
+			g_bruteforce_result.reason += "; manual observed: " + manual_sequence + " (not solver validated)";
 	}
 	g_bruteforce_result.sequence = found_hit ? brute_sequence_text( best.actions, true ) : "";
 	g_bruteforce_result.closest_sequence = brute_sequence_text( best.actions, false );
+	g_bruteforce_result.manual_sequence = manual_sequence;
+	if ( !manual_sequence.empty( ) && manual_summary.variants > 0 ) {
+		g_bruteforce_result.manual_closest_sequence = brute_sequence_text( manual_best.actions, false );
+		g_bruteforce_result.manual_issue = manual_best.reason.empty( ) ? manual_summary.best_reason : manual_best.reason;
+		g_bruteforce_result.manual_closest_point_id = manual_best.best_near_record.point_id;
+		g_bruteforce_result.manual_closest_point_type = manual_best.best_near_record.point_id > 0 ? ToString( manual_best.best_near_record.type ) : "";
+		g_bruteforce_result.manual_closest_quality = manual_best.best_near_record.quality;
+		g_bruteforce_result.manual_closest_source = manual_best.best_near_record.source;
+		g_bruteforce_result.manual_closest_distance =
+			manual_best.closest_distance == std::numeric_limits< float >::max( ) ? -1.0f : manual_best.closest_distance;
+		g_bruteforce_result.manual_closest_tick = manual_best.closest_tick;
+		g_bruteforce_result.manual_legal_variants = manual_summary.legal_variants;
+		g_bruteforce_result.manual_illegal_variants = manual_summary.illegal_variants;
+	}
 	g_bruteforce_result.hit_points = best.hit_points;
 	g_bruteforce_result.total_points = static_cast< int >( points.size( ) );
 	g_bruteforce_result.closest_point_id = best.closest_point_id;
+	g_bruteforce_result.closest_point_type = best.best_near_record.point_id > 0 ? ToString( best.best_near_record.type ) : "";
+	g_bruteforce_result.closest_quality = best.best_near_record.quality;
+	g_bruteforce_result.closest_source = best.best_near_record.source;
 	g_bruteforce_result.closest_distance = best.closest_distance == std::numeric_limits< float >::max( ) ? -1.0f : best.closest_distance;
 	g_bruteforce_result.closest_tick = best.closest_tick;
 	g_bruteforce_result.pixelsurf_tick = best.pixelsurf_tick;
@@ -2539,12 +3421,50 @@ const BruteForceResult& RunBruteForceCalculation( const BruteForceSettings& sett
 		AppendDebugLog( "routecalc", "best seq=\"" + g_bruteforce_result.sequence + "\" status=" + ToString( g_bruteforce_result.status ) +
 		                                  " pixelsurf_tick=" + std::to_string( g_bruteforce_result.pixelsurf_tick ) +
 		                                  " score=" + std::to_string( g_bruteforce_result.score ) );
-	else
-		AppendDebugLog( "routecalc", "no_route closest_seq=\"" + g_bruteforce_result.closest_sequence +
+	else {
+		const char* tag = g_bruteforce_result.status == RouteResultStatus::CoordinateNearTarget ? "no_trace_confirmed_route" : "no_route";
+		AppendDebugLog( "routecalc", std::string( tag ) + " closest_seq=\"" + g_bruteforce_result.closest_sequence +
 		                                  "\" closest_dist=" + std::to_string( g_bruteforce_result.closest_distance ) +
 		                                  " closest_tick=" + std::to_string( g_bruteforce_result.closest_tick ) +
+		                                  " closest_point=" + std::to_string( g_bruteforce_result.closest_point_id ) +
+		                                  " closest_type=" + g_bruteforce_result.closest_point_type +
+		                                  " closest_quality=" + g_bruteforce_result.closest_quality +
+		                                  " closest_source=" + g_bruteforce_result.closest_source +
 		                                  " reached=" + std::to_string( g_bruteforce_result.hit_points ) + "/" +
 		                                  std::to_string( g_bruteforce_result.total_points ) );
+		if ( best.best_near_record.point_id > 0 ) {
+			AppendDebugLog( "routecalc", !best.best_near_proof.empty( ) ? best.best_near_proof :
+			                                                           "best_near_miss seq=\"" + g_bruteforce_result.closest_sequence +
+			                                                               "\" point=" + std::to_string( best.best_near_record.point_id ) +
+			                                                               " type=" + ToString( best.best_near_record.type ) +
+			                                                               " tick=" + std::to_string( best.best_near_record.tick ) +
+			                                                               " dist=" + std::to_string( best.best_near_record.distance ) +
+			                                                               " quality=" + best.best_near_record.quality +
+			                                                               " reason=" + best.best_near_record.reason +
+			                                                               " source=" + best.best_near_record.source );
+			if ( !best.best_near_approach_proof.empty( ) )
+				AppendDebugLog( "routecalc", best.best_near_approach_proof );
+			if ( !best.best_near_trace_proof.empty( ) )
+				AppendDebugLog( "routecalc", best.best_near_trace_proof );
+		}
+		if ( !manual_sequence.empty( ) && manual_summary.variants > 0 ) {
+			AppendDebugLog( "routecalc_manual",
+			                "manual_compare seq=\"" + manual_sequence + "\" closest_seq=\"" + g_bruteforce_result.manual_closest_sequence +
+			                    "\" closest_dist=" + std::to_string( g_bruteforce_result.manual_closest_distance ) +
+			                    " closest_tick=" + std::to_string( g_bruteforce_result.manual_closest_tick ) +
+			                    " closest_point=" + std::to_string( g_bruteforce_result.manual_closest_point_id ) +
+			                    " closest_type=" + g_bruteforce_result.manual_closest_point_type +
+			                    " quality=" + g_bruteforce_result.manual_closest_quality +
+			                    " source=" + g_bruteforce_result.manual_closest_source +
+			                    " legal_variants=" + std::to_string( g_bruteforce_result.manual_legal_variants ) +
+			                    " illegal_variants=" + std::to_string( g_bruteforce_result.manual_illegal_variants ) +
+			                    " issue=" + g_bruteforce_result.manual_issue );
+			if ( !manual_best.best_near_approach_proof.empty( ) )
+				AppendDebugLog( "routecalc_manual", manual_best.best_near_approach_proof );
+			if ( !manual_best.best_near_trace_proof.empty( ) )
+				AppendDebugLog( "routecalc_manual", manual_best.best_near_trace_proof );
+		}
+	}
 
 	g_combo_results.push_back( combo_from_bruteforce( g_bruteforce_result ) );
 	return g_bruteforce_result;
@@ -2590,5 +3510,79 @@ const std::vector< ManualRouteObservation >& GetManualObservations( )
 const ManualRouteObservation* GetLastManualObservation( )
 {
 	return g_manual_observations.empty( ) ? nullptr : &g_manual_observations.back( );
+}
+
+BruteForceSettings MakeCsgo64Preset( const RouteCalcPreset preset )
+{
+	BruteForceSettings settings{ };
+	settings.enabled = true;
+	settings.start_from_current_player = true;
+	settings.use_all_points = true;
+	settings.use_hull_trace = true;
+	settings.show_debug_candidates = false;
+	settings.show_rejects = false;
+	settings.tickrate = 64;
+	settings.include_current_view_yaw = true;
+	settings.pixelsurf_validation_mode = PixelSurfValidationMode::StrictTrace;
+	settings.preset_name = "CSGO_64_InsaneDebug";
+
+	if ( preset == RouteCalcPreset::CSGO_64_Normal ) {
+		settings.preset_name = "CSGO_64_Normal";
+		settings.allow_heavy_cpu = false;
+		settings.max_depth = 3;
+		settings.max_ticks = 256;
+		settings.max_sequences = 5000;
+		settings.max_variants = 35000;
+		settings.hard_timeout_ms = 3000;
+		settings.floor_radius = 18.0f;
+		settings.floor_z_tolerance = 8.0f;
+		settings.pixelsurf_radius = 8.0f;
+		settings.yaw_offsets_deg = { -25.0f, -10.0f, 0.0f, 10.0f, 25.0f };
+		settings.move_samples = { { 450.0f, 0.0f }, { 0.0f, -450.0f }, { 0.0f, 450.0f }, { 450.0f, -450.0f }, { 450.0f, 450.0f } };
+		settings.speed_samples = { 220, 250, 280 };
+		settings.delay_samples = { 0, 2, 4 };
+		settings.minijump_release_offsets = { 1, 2, 3, 4, 5 };
+		settings.crouchjump_lead_samples = { 4, 7, 10 };
+		return settings;
+	}
+
+	if ( preset == RouteCalcPreset::CSGO_64_Heavy ) {
+		settings.preset_name = "CSGO_64_Heavy";
+		settings.allow_heavy_cpu = true;
+		settings.max_depth = 4;
+		settings.max_ticks = 384;
+		settings.max_sequences = 7500;
+		settings.max_variants = 90000;
+		settings.hard_timeout_ms = 8000;
+		settings.floor_radius = 24.0f;
+		settings.floor_z_tolerance = 12.0f;
+		settings.pixelsurf_radius = 10.0f;
+		settings.yaw_offsets_deg = { -45.0f, -35.0f, -25.0f, -15.0f, -10.0f, -5.0f, 0.0f, 5.0f, 10.0f, 15.0f, 25.0f, 35.0f, 45.0f };
+		settings.move_samples = { { 450.0f, 0.0f }, { 0.0f, -450.0f }, { 0.0f, 450.0f }, { 450.0f, -450.0f }, { 450.0f, 450.0f }, { 0.0f, 0.0f } };
+		settings.speed_samples = { 180, 220, 250, 280, 320 };
+		settings.delay_samples = { 0, 2, 4, 6 };
+		settings.minijump_release_offsets = { 1, 2, 3, 4, 5, 6 };
+		settings.crouchjump_lead_samples = { 1, 4, 7, 10 };
+		return settings;
+	}
+
+	settings.allow_heavy_cpu = true;
+	settings.max_depth = 5;
+	settings.max_ticks = 512;
+	settings.max_sequences = 12000;
+	settings.max_variants = 160000;
+	settings.hard_timeout_ms = 9000;
+	settings.floor_radius = 32.0f;
+	settings.floor_z_tolerance = 12.0f;
+	settings.pixelsurf_radius = 12.0f;
+	settings.yaw_offsets_deg = { -60.0f, -45.0f, -35.0f, -30.0f, -25.0f, -20.0f, -15.0f, -10.0f, -5.0f, 0.0f, 5.0f, 10.0f,
+		                         15.0f, 20.0f, 25.0f, 30.0f, 35.0f, 45.0f, 60.0f };
+	settings.move_samples = { { 450.0f, 0.0f }, { 300.0f, 0.0f }, { 0.0f, -450.0f }, { 0.0f, 450.0f }, { 450.0f, -450.0f }, { 450.0f, 450.0f },
+		                      { 300.0f, -450.0f }, { 300.0f, 450.0f }, { 0.0f, 0.0f } };
+	settings.speed_samples = { 160, 180, 200, 220, 250, 280, 320 };
+	settings.delay_samples = { 0, 1, 2, 3, 4, 6 };
+	settings.minijump_release_offsets = { 1, 2, 3, 4, 5, 6 };
+	settings.crouchjump_lead_samples = { 1, 2, 4, 7, 10 };
+	return settings;
 }
 }
